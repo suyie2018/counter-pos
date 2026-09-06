@@ -75,6 +75,26 @@
     padding: 0 10px;
   }
 
+  /* MOBILE TOP HEADER */
+  .mobile-header {
+    display: none;
+    background: var(--sidebar);
+    color: #fff;
+    padding: 10px 16px;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+  }
+  .mobile-header .m-brand {
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: 16px;
+  }
+  .mobile-header .m-user {
+    font-size: 12px;
+    color: var(--sidebar-text);
+  }
+
   .app{
     display:flex;
     min-height:100vh;
@@ -346,6 +366,7 @@
   ::-webkit-scrollbar-thumb{background:#C9C3B4; border-radius:4px;}
 
   @media (max-width: 900px){
+    .mobile-header{display:flex;}
     .app{flex-direction:column;}
     .sidebar{width:100%; flex-direction:row; flex-wrap:wrap; padding:12px;}
     .brand{display:none;}
@@ -353,10 +374,20 @@
     .sidebar-footer{display:none;}
     .pos-grid{flex-direction:column;}
     .pos-left, .pos-right{max-width:100%; flex:1 1 100%; position:static;}
+    .main{padding: 16px 16px 60px 16px;}
   }
 </style>
 </head>
 <body>
+
+<!-- MOBILE TOP HEADER BAR -->
+<div class="mobile-header">
+  <div>
+    <div class="m-brand">COUNTER POS</div>
+    <div class="m-user"><span id="m-user-name">-</span> (<span id="m-user-role">-</span>)</div>
+  </div>
+  <button class="btn btn-sm btn-danger logout-btn-action">Log Out</button>
+</div>
 
 <!-- FIRST TIME LICENSE ACTIVATION OVERLAY -->
 <div class="license-overlay" id="license-overlay">
@@ -430,7 +461,7 @@
       <button data-view="users" id="nav-users"><span class="nav-icon">⚙</span>User Mgmt</button>
     </div>
     <div class="sidebar-footer">
-      <button class="btn btn-sm btn-danger" id="logout-btn" style="width:100%; margin-bottom:10px;">Log Out</button>
+      <button class="btn btn-sm btn-danger logout-btn-action" id="logout-btn" style="width:100%; margin-bottom:10px;">Log Out</button>
       Data saved on device &amp; cloud
     </div>
   </div>
@@ -816,10 +847,12 @@ let refunds = [];
 let stockAdjustments = [];
 let users = [];
 let currentUser = null;
+let currentDeviceToken = null;
 let cart = [];
 let currentCatFilter = 'all';
 let activeRemoveProductId = null;
 let firebaseDbUrl = '';
+let syncEventSource = null;
 
 /* ---------- Valid Licenses ---------- */
 const VALID_LICENSES = ['NEAZT-POS-2601-CUS', 'NEAZT-POS-2602-CUS', 'NEAZT-POS-2603-CUS', 'NEAZT-2026-TEST'];
@@ -868,7 +901,7 @@ window.addEventListener('storage', async (e) => {
   }
 });
 
-/* ---------- CLOUD SYNC ENGINE (REALTIME BACKEND INTEGRATION) ---------- */
+/* ---------- CLOUD SYNC ENGINE (REALTIME LISTENERS & HTTP FALLBACKS) ---------- */
 async function cloudSyncPush(key, value) {
   if (!firebaseDbUrl) return;
   try {
@@ -901,6 +934,66 @@ async function cloudSyncPull() {
   return false;
 }
 
+/* REALTIME STREAMING SERVER-SENT EVENTS (SSE) FOR MULTI-DEVICE INSTANT SYNC */
+function startRealtimeSyncStream() {
+  if (!firebaseDbUrl) return;
+  if (syncEventSource) syncEventSource.close();
+
+  try {
+    const sseUrl = firebaseDbUrl.replace(/\/$/, '') + '/.json';
+    syncEventSource = new EventSource(sseUrl);
+
+    syncEventSource.addEventListener('put', async (e) => {
+      if (!e.data) return;
+      const parsed = JSON.parse(e.data);
+      if (parsed && parsed.path === '/') {
+        const data = parsed.data;
+        if (!data) return;
+        if (data.products) { products = data.products; await storageSet('products', products); }
+        if (data.categories) { categories = data.categories; await storageSet('categories', categories); }
+        if (data.sales) { sales = data.sales; await storageSet('sales', sales); }
+        if (data.refunds) { refunds = data.refunds; await storageSet('refunds', refunds); }
+        if (data.stockAdjustments) { stockAdjustments = data.stockAdjustments; await storageSet('stock-adjustments', stockAdjustments); }
+        if (data.users) { 
+          users = data.users; 
+          await storageSet('users', users);
+          // Check if session token changed elsewhere for currently logged in user
+          if (currentUser) {
+            const myUserInCloud = users.find(u => u.username.toLowerCase() === currentUser.username.toLowerCase());
+            if (myUserInCloud && myUserInCloud.active_session_token && myUserInCloud.active_session_token !== currentDeviceToken) {
+              await performLogout(true);
+            }
+          }
+        }
+        renderAllViews();
+      } else {
+        await cloudSyncPull();
+        renderAllViews();
+      }
+    });
+
+    syncEventSource.onerror = (e) => {
+      console.warn('Realtime sync connection warning, falling back to pull polling.');
+    };
+  } catch(err) {
+    console.error('SSE Initialization Error:', err);
+  }
+}
+
+// Polling interval fallback for cloud sync
+setInterval(async () => {
+  if (firebaseDbUrl && currentUser) {
+    const synced = await cloudSyncPull();
+    if (synced) {
+      const myUserInCloud = users.find(u => u.username.toLowerCase() === currentUser.username.toLowerCase());
+      if (myUserInCloud && myUserInCloud.active_session_token && myUserInCloud.active_session_token !== currentDeviceToken) {
+        await performLogout(true);
+      }
+      renderAllViews();
+    }
+  }
+}, 10000);
+
 $('#save-sync-btn').addEventListener('click', async () => {
   const url = $('#firebase-db-url').value.trim();
   firebaseDbUrl = url;
@@ -910,12 +1003,14 @@ $('#save-sync-btn').addEventListener('click', async () => {
     if (success) {
       $('#sync-status').textContent = 'Cloud Connected';
       $('#sync-status').className = 'sync-badge sync-online';
+      startRealtimeSyncStream();
       toast('Connected to Cloud Database! Data updated.');
       renderAllViews();
     } else {
       toast('Failed to connect to Firebase URL.', true);
     }
   } else {
+    if (syncEventSource) syncEventSource.close();
     $('#sync-status').textContent = 'Local Mode';
     $('#sync-status').className = 'sync-badge sync-offline';
     toast('Cloud Sync Disabled.');
@@ -1011,8 +1106,8 @@ function seedData(){
   categories = ['Beverages','Snacks','Bakery','Grocery','Household'];
   products = [];
   users = [
-    { id: 'u-1', username: 'admin', password: '123', role: 'Administrator' },
-    { id: 'u-2', username: 'sale', password: '123', role: 'Sale Person' }
+    { id: 'u-1', username: 'admin', password: '123', role: 'Administrator', active_session_token: null },
+    { id: 'u-2', username: 'sale', password: '123', role: 'Sale Person', active_session_token: null }
   ];
 }
 
@@ -1025,6 +1120,7 @@ async function loadData(){
     if (connected) {
       $('#sync-status').textContent = 'Cloud Connected';
       $('#sync-status').className = 'sync-badge sync-online';
+      startRealtimeSyncStream();
       await checkSavedSession();
       return;
     }
@@ -1053,13 +1149,30 @@ async function loadData(){
 }
 
 async function checkSavedSession() {
-  const savedUser = await storageGet('session_user');
-  if (savedUser) {
-    const existing = users.find(u => u.username.toLowerCase() === savedUser.username.toLowerCase());
-    if (existing) {
+  const savedSession = await storageGet('session_user');
+  if (savedSession && savedSession.username && savedSession.token) {
+    if (firebaseDbUrl) await cloudSyncPull();
+    const existing = users.find(u => u.username.toLowerCase() === savedSession.username.toLowerCase());
+    
+    // Check if current token matches cloud active token
+    if (existing && existing.active_session_token === savedSession.token) {
       currentUser = existing;
+      currentDeviceToken = savedSession.token;
       applyUserPermissions();
       $('#login-overlay').style.display = 'none';
+    } else if (existing && !existing.active_session_token) {
+      // Re-claim session if cloud active token was cleared
+      currentDeviceToken = savedSession.token;
+      existing.active_session_token = currentDeviceToken;
+      currentUser = existing;
+      await persistUsers();
+      applyUserPermissions();
+      $('#login-overlay').style.display = 'none';
+    } else {
+      // Token mismatched or session active on another device
+      await storageSet('session_user', null);
+      currentUser = null;
+      currentDeviceToken = null;
     }
   }
 }
@@ -1070,20 +1183,35 @@ async function persistRefunds(){ await storageSet('refunds', refunds); cloudSync
 async function persistAdjustments(){ await storageSet('stock-adjustments', stockAdjustments); cloudSyncPush('stockAdjustments', stockAdjustments); }
 async function persistUsers(){ await storageSet('users', users); cloudSyncPush('users', users); }
 
-/* ---------- AUTHENTICATION & PERMISSIONS ---------- */
+/* ---------- AUTHENTICATION & SINGLE SESSION RESTRICTION ---------- */
 $('#login-form').addEventListener('submit', async e=>{
   e.preventDefault();
   const uName = $('#login-username').value.trim();
   const uPass = $('#login-password').value.trim();
+
+  if (firebaseDbUrl) await cloudSyncPull();
   
   const found = users.find(u => u.username.toLowerCase() === uName.toLowerCase() && u.password === uPass);
   if (!found){
     toast('Invalid username or password.', true);
     return;
   }
-  
+
+  // RESTRICTION: Block login if user is already logged in on another device
+  if (found.active_session_token) {
+    toast(`Account "${found.username}" is already logged in on another device. Please log out from that device first.`, true);
+    return;
+  }
+
+  // Generate unique token for current login session
+  const sessionToken = uid('SESS');
+  found.active_session_token = sessionToken;
+  currentDeviceToken = sessionToken;
   currentUser = found;
-  await storageSet('session_user', { username: found.username, role: found.role });
+
+  await persistUsers();
+  await storageSet('session_user', { username: found.username, role: found.role, token: sessionToken });
+  
   applyUserPermissions();
   $('#login-overlay').style.display = 'none';
   $('#login-password').value = '';
@@ -1120,6 +1248,8 @@ async function handleGoogleSignIn(response) {
   const googleEmail = payload.email.toLowerCase();
   const googleName = payload.name || googleEmail.split('@')[0];
 
+  if (firebaseDbUrl) await cloudSyncPull();
+
   let found = users.find(u => u.username.toLowerCase() === googleEmail || u.username.toLowerCase() === googleName.toLowerCase());
 
   if (!found) {
@@ -1128,34 +1258,67 @@ async function handleGoogleSignIn(response) {
       username: googleEmail,
       password: '',
       role: 'Administrator',
-      google_auth: true
+      google_auth: true,
+      active_session_token: null
     };
     users.push(found);
-    await persistUsers();
-    renderUsers();
-  } else {
-    found.role = 'Administrator';
-    await persistUsers();
-    renderUsers();
   }
 
+  // RESTRICTION: Check single active session restriction for Google logins
+  if (found.active_session_token) {
+    toast(`Account "${found.username}" is already active on another device. Please log out from that device first.`, true);
+    return;
+  }
+
+  const sessionToken = uid('SESS');
+  found.role = 'Administrator';
+  found.active_session_token = sessionToken;
+  currentDeviceToken = sessionToken;
+
+  await persistUsers();
+
   currentUser = found;
-  await storageSet('session_user', { username: found.username, role: found.role });
+  await storageSet('session_user', { username: found.username, role: found.role, token: sessionToken });
   applyUserPermissions();
   $('#login-overlay').style.display = 'none';
   toast(`Logged in via Google as ${currentUser.username} (${currentUser.role})`);
 }
 
-$('#logout-btn').addEventListener('click', async ()=>{
+async function performLogout(forced = false) {
+  if (currentUser) {
+    const userInList = users.find(u => u.id === currentUser.id);
+    if (userInList) {
+      userInList.active_session_token = null;
+      await persistUsers();
+    }
+  }
   currentUser = null;
+  currentDeviceToken = null;
   await storageSet('session_user', null);
   $('#login-overlay').style.display = 'flex';
+
+  if (forced) {
+    toast('Your session was logged in on another device or invalidated.', true);
+  } else {
+    toast('Logged out successfully.');
+  }
+}
+
+// Attach logout handler to both sidebar & mobile top bar buttons
+$$('.logout-btn-action').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    await performLogout(false);
+  });
 });
 
 function applyUserPermissions(){
   if (!currentUser) return;
   $('#current-user-name').textContent = currentUser.username;
   $('#current-user-role').textContent = currentUser.role;
+
+  // Sync details to mobile top header
+  $('#m-user-name').textContent = currentUser.username;
+  $('#m-user-role').textContent = currentUser.role;
 
   if (currentUser.role === 'Sale Person'){
     $('#nav-dashboard').style.display = 'none';
@@ -2134,7 +2297,7 @@ $('#save-user-btn').addEventListener('click', async ()=>{
     if (!password){ toast('Password is required for new users.', true); return; }
     if (users.some(u => u.username.toLowerCase() === username.toLowerCase())){
       toast('Username already exists.', true); return; }
-    users.push({ id: uid('U'), username, password, role });
+    users.push({ id: uid('U'), username, password, role, active_session_token: null });
     toast(`User ${username} created.`);
   }
 
