@@ -110,6 +110,12 @@
     background:rgba(255,255,255,0.05); border-radius:var(--radius);
     font-size:12px; color:var(--sidebar-text-active);
   }
+  .sync-badge {
+    margin:0 10px 10px 10px; padding:4px 8px; border-radius:4px; font-size:11px; text-align:center;
+  }
+  .sync-online { background:var(--good-bg); color:var(--good); font-weight:600; }
+  .sync-offline { background:var(--bad-bg); color:var(--bad); font-weight:600; }
+
   .nav{
     display:flex;
     flex-direction:column;
@@ -413,6 +419,7 @@
       <div style="font-weight:700;" id="current-user-name">-</div>
       <div style="font-size:10px; opacity:0.8;" id="current-user-role">-</div>
     </div>
+    <div id="sync-status" class="sync-badge sync-offline">Local Mode</div>
     <div class="nav" id="nav">
       <button data-view="pos" class="active"><span class="nav-icon">▤</span>Cashier</button>
       <button data-view="products"><span class="nav-icon">▦</span>Products</button>
@@ -424,7 +431,7 @@
     </div>
     <div class="sidebar-footer">
       <button class="btn btn-sm btn-danger" id="logout-btn" style="width:100%; margin-bottom:10px;">Log Out</button>
-      Data saved on device
+      Data saved on device &amp; cloud
     </div>
   </div>
 
@@ -545,6 +552,7 @@
         <button class="tab active" data-tab="add">Add New Product</button>
         <button class="tab" data-tab="adjust">Edit Existing Product / Stock</button>
         <button class="tab" data-tab="categories">Categories</button>
+        <button class="tab" data-tab="sync">Cloud Sync Config</button>
       </div>
 
       <div id="tab-add" class="panel pad" style="max-width:520px;">
@@ -651,6 +659,19 @@
           </div>
         </div>
         <div id="cat-list" style="margin-top:6px;"></div>
+      </div>
+
+      <!-- CLOUD SYNC CONFIG TAB -->
+      <div id="tab-sync" class="panel pad" style="max-width:520px; display:none;">
+        <div style="font-weight:700; margin-bottom:6px;">Real-time Multi-User Cloud Sync</div>
+        <div style="font-size:12px; color:var(--muted); margin-bottom:14px;">
+          To sync stock and sales across all users/devices on GitHub Pages, enter a free Firebase Realtime Database URL.
+        </div>
+        <div class="field">
+          <label>Firebase Database URL</label>
+          <input type="text" id="firebase-db-url" placeholder="https://your-project-default-rtdb.firebaseio.com">
+        </div>
+        <button class="btn btn-primary" id="save-sync-btn">Save &amp; Connect Cloud</button>
       </div>
     </div>
 
@@ -798,6 +819,7 @@ let currentUser = null;
 let cart = [];
 let currentCatFilter = 'all';
 let activeRemoveProductId = null;
+let firebaseDbUrl = '';
 
 /* ---------- Valid Licenses ---------- */
 const VALID_LICENSES = ['NEAZT-POS-2601-CUS', 'NEAZT-POS-2602-CUS', 'NEAZT-POS-2603-CUS', 'NEAZT-2026-TEST'];
@@ -838,6 +860,68 @@ async function storageSet(key, value){
   } catch(e) { console.error('Storage error', e); }
 }
 
+/* Sync across browser tabs automatically via storage events */
+window.addEventListener('storage', async (e) => {
+  if (e.key && e.key.startsWith('counter_pos_')) {
+    await loadData();
+    renderAllViews();
+  }
+});
+
+/* ---------- CLOUD SYNC ENGINE (REALTIME BACKEND INTEGRATION) ---------- */
+async function cloudSyncPush(key, value) {
+  if (!firebaseDbUrl) return;
+  try {
+    const cleanUrl = firebaseDbUrl.replace(/\/$/, '') + '/' + key + '.json';
+    await fetch(cleanUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(value)
+    });
+  } catch(e) { console.error('Cloud Push Error', e); }
+}
+
+async function cloudSyncPull() {
+  if (!firebaseDbUrl) return false;
+  try {
+    const cleanUrl = firebaseDbUrl.replace(/\/$/, '') + '/.json';
+    const res = await fetch(cleanUrl);
+    if (!res.ok) return false;
+    const data = await res.json();
+    if (data) {
+      if (data.products) { products = data.products; await storageSet('products', products); }
+      if (data.categories) { categories = data.categories; await storageSet('categories', categories); }
+      if (data.sales) { sales = data.sales; await storageSet('sales', sales); }
+      if (data.refunds) { refunds = data.refunds; await storageSet('refunds', refunds); }
+      if (data.stockAdjustments) { stockAdjustments = data.stockAdjustments; await storageSet('stock-adjustments', stockAdjustments); }
+      if (data.users) { users = data.users; await storageSet('users', users); }
+      return true;
+    }
+  } catch(e) { console.error('Cloud Pull Error', e); }
+  return false;
+}
+
+$('#save-sync-btn').addEventListener('click', async () => {
+  const url = $('#firebase-db-url').value.trim();
+  firebaseDbUrl = url;
+  await storageSet('firebase_db_url', url);
+  if (url) {
+    const success = await cloudSyncPull();
+    if (success) {
+      $('#sync-status').textContent = 'Cloud Connected';
+      $('#sync-status').className = 'sync-badge sync-online';
+      toast('Connected to Cloud Database! Data updated.');
+      renderAllViews();
+    } else {
+      toast('Failed to connect to Firebase URL.', true);
+    }
+  } else {
+    $('#sync-status').textContent = 'Local Mode';
+    $('#sync-status').className = 'sync-badge sync-offline';
+    toast('Cloud Sync Disabled.');
+  }
+});
+
 /* ---------- DYNAMIC GOOGLE CLIENT ID & OAUTH LOADER ---------- */
 let activeGoogleClientId = '';
 
@@ -853,9 +937,8 @@ async function setupGoogleSignIn() {
 function loadAndRenderGoogleSignIn(clientId) {
   if (!clientId) return;
   const container = $('#g_id_signin_container');
-  container.innerHTML = ''; // Clear existing button container
+  container.innerHTML = '';
 
-  // Function to initialize Google Sign-In SDK
   const initGSI = () => {
     if (window.google && window.google.accounts && window.google.accounts.id) {
       window.google.accounts.id.initialize({
@@ -870,7 +953,6 @@ function loadAndRenderGoogleSignIn(clientId) {
     }
   };
 
-  // Dynamically load Google GSI library if not already injected
   if (!document.getElementById('google-gsi-script')) {
     const script = document.createElement('script');
     script.id = 'google-gsi-script';
@@ -935,6 +1017,19 @@ function seedData(){
 }
 
 async function loadData(){
+  const savedUrl = await storageGet('firebase_db_url');
+  if (savedUrl) {
+    firebaseDbUrl = savedUrl;
+    $('#firebase-db-url').value = savedUrl;
+    const connected = await cloudSyncPull();
+    if (connected) {
+      $('#sync-status').textContent = 'Cloud Connected';
+      $('#sync-status').className = 'sync-badge sync-online';
+      await checkSavedSession();
+      return;
+    }
+  }
+
   const p = await storageGet('products');
   const c = await storageGet('categories');
   const s = await storageGet('sales');
@@ -953,16 +1048,30 @@ async function loadData(){
   sales = s || [];
   refunds = r || [];
   stockAdjustments = a || [];
+
+  await checkSavedSession();
 }
 
-async function persistProducts(){ await storageSet('products', products); }
-async function persistSales(){ await storageSet('sales', sales); }
-async function persistRefunds(){ await storageSet('refunds', refunds); }
-async function persistAdjustments(){ await storageSet('stock-adjustments', stockAdjustments); }
-async function persistUsers(){ await storageSet('users', users); }
+async function checkSavedSession() {
+  const savedUser = await storageGet('session_user');
+  if (savedUser) {
+    const existing = users.find(u => u.username.toLowerCase() === savedUser.username.toLowerCase());
+    if (existing) {
+      currentUser = existing;
+      applyUserPermissions();
+      $('#login-overlay').style.display = 'none';
+    }
+  }
+}
+
+async function persistProducts(){ await storageSet('products', products); cloudSyncPush('products', products); }
+async function persistSales(){ await storageSet('sales', sales); cloudSyncPush('sales', sales); }
+async function persistRefunds(){ await storageSet('refunds', refunds); cloudSyncPush('refunds', refunds); }
+async function persistAdjustments(){ await storageSet('stock-adjustments', stockAdjustments); cloudSyncPush('stockAdjustments', stockAdjustments); }
+async function persistUsers(){ await storageSet('users', users); cloudSyncPush('users', users); }
 
 /* ---------- AUTHENTICATION & PERMISSIONS ---------- */
-$('#login-form').addEventListener('submit', e=>{
+$('#login-form').addEventListener('submit', async e=>{
   e.preventDefault();
   const uName = $('#login-username').value.trim();
   const uPass = $('#login-password').value.trim();
@@ -974,6 +1083,7 @@ $('#login-form').addEventListener('submit', e=>{
   }
   
   currentUser = found;
+  await storageSet('session_user', { username: found.username, role: found.role });
   applyUserPermissions();
   $('#login-overlay').style.display = 'none';
   $('#login-password').value = '';
@@ -1030,13 +1140,15 @@ async function handleGoogleSignIn(response) {
   }
 
   currentUser = found;
+  await storageSet('session_user', { username: found.username, role: found.role });
   applyUserPermissions();
   $('#login-overlay').style.display = 'none';
   toast(`Logged in via Google as ${currentUser.username} (${currentUser.role})`);
 }
 
-$('#logout-btn').addEventListener('click', ()=>{
+$('#logout-btn').addEventListener('click', async ()=>{
   currentUser = null;
+  await storageSet('session_user', null);
   $('#login-overlay').style.display = 'flex';
 });
 
@@ -1737,6 +1849,7 @@ function switchSetupTab(name){
   $('#tab-add').style.display = name === 'add' ? 'block' : 'none';
   $('#tab-adjust').style.display = name === 'adjust' ? 'block' : 'none';
   $('#tab-categories').style.display = name === 'categories' ? 'block' : 'none';
+  $('#tab-sync').style.display = name === 'sync' ? 'block' : 'none';
   if (name === 'categories') renderCategoryList();
 }
 $$('.tab').forEach(t=> t.addEventListener('click', ()=> switchSetupTab(t.dataset.tab)));
@@ -1767,6 +1880,7 @@ function renderCategoryList(){
 
 async function refreshAfterCategoryChange(){
   await storageSet('categories', categories);
+  cloudSyncPush('categories', categories);
   populateCategorySelects();
   renderChips();
   renderProductGrid();
@@ -2028,12 +2142,7 @@ async function deleteUser(id){
   toast('User deleted.');
 }
 
-/* ================= INIT ================= */
-async function init(){
-  await checkDeviceLicense();
-  await loadData();
-  await setupGoogleSignIn();
-  tickClock();
+function renderAllViews(){
   renderChips();
   renderProductGrid();
   renderCart();
@@ -2043,6 +2152,15 @@ async function init(){
   renderSetup();
   renderDashboard();
   renderUsers();
+}
+
+/* ================= INIT ================= */
+async function init(){
+  await checkDeviceLicense();
+  await loadData();
+  await setupGoogleSignIn();
+  tickClock();
+  renderAllViews();
 }
 init();
 </script>
