@@ -278,7 +278,6 @@
   .cart-row-name .n{font-weight:600; font-size:12.5px; display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   .cart-row-name .u{font-size:10.5px; color:var(--muted); font-family:var(--mono);}
   
-  /* Compact Cart Qty Input */
   .qty-input{
     width:38px !important;
     height:28px !important;
@@ -957,7 +956,8 @@ function startRealtimeSyncStream() {
         if (data.users) { 
           users = data.users; 
           await storageSet('users', users);
-          // Check if session token changed elsewhere for currently logged in user
+          
+          /* Single Session Check: Logout if active_session_token changed elsewhere */
           if (currentUser) {
             const myUserInCloud = users.find(u => u.username.toLowerCase() === currentUser.username.toLowerCase());
             if (myUserInCloud && myUserInCloud.active_session_token && myUserInCloud.active_session_token !== currentDeviceToken) {
@@ -968,6 +968,13 @@ function startRealtimeSyncStream() {
         renderAllViews();
       } else {
         await cloudSyncPull();
+        if (currentUser) {
+          const myUserInCloud = users.find(u => u.username.toLowerCase() === currentUser.username.toLowerCase());
+          if (myUserInCloud && myUserInCloud.active_session_token && myUserInCloud.active_session_token !== currentDeviceToken) {
+            await performLogout(true);
+            return;
+          }
+        }
         renderAllViews();
       }
     });
@@ -980,19 +987,28 @@ function startRealtimeSyncStream() {
   }
 }
 
-// Polling interval fallback for cloud sync
+// Active polling interval fallback for cloud sync and token check
 setInterval(async () => {
-  if (firebaseDbUrl && currentUser) {
-    const synced = await cloudSyncPull();
-    if (synced) {
-      const myUserInCloud = users.find(u => u.username.toLowerCase() === currentUser.username.toLowerCase());
-      if (myUserInCloud && myUserInCloud.active_session_token && myUserInCloud.active_session_token !== currentDeviceToken) {
+  if (currentUser) {
+    if (firebaseDbUrl) {
+      const synced = await cloudSyncPull();
+      if (synced) {
+        const myUserInCloud = users.find(u => u.username.toLowerCase() === currentUser.username.toLowerCase());
+        if (myUserInCloud && myUserInCloud.active_session_token && myUserInCloud.active_session_token !== currentDeviceToken) {
+          await performLogout(true);
+          return;
+        }
+        renderAllViews();
+      }
+    } else {
+      // Local session verification
+      const uLoc = users.find(u => u.username.toLowerCase() === currentUser.username.toLowerCase());
+      if (uLoc && uLoc.active_session_token && uLoc.active_session_token !== currentDeviceToken) {
         await performLogout(true);
       }
-      renderAllViews();
     }
   }
-}, 10000);
+}, 3000);
 
 $('#save-sync-btn').addEventListener('click', async () => {
   const url = $('#firebase-db-url').value.trim();
@@ -1154,14 +1170,13 @@ async function checkSavedSession() {
     if (firebaseDbUrl) await cloudSyncPull();
     const existing = users.find(u => u.username.toLowerCase() === savedSession.username.toLowerCase());
     
-    // Check if current token matches cloud active token
+    // Validate current device token against remote active token
     if (existing && existing.active_session_token === savedSession.token) {
       currentUser = existing;
       currentDeviceToken = savedSession.token;
       applyUserPermissions();
       $('#login-overlay').style.display = 'none';
     } else if (existing && !existing.active_session_token) {
-      // Re-claim session if cloud active token was cleared
       currentDeviceToken = savedSession.token;
       existing.active_session_token = currentDeviceToken;
       currentUser = existing;
@@ -1169,7 +1184,6 @@ async function checkSavedSession() {
       applyUserPermissions();
       $('#login-overlay').style.display = 'none';
     } else {
-      // Token mismatched or session active on another device
       await storageSet('session_user', null);
       currentUser = null;
       currentDeviceToken = null;
@@ -1197,13 +1211,7 @@ $('#login-form').addEventListener('submit', async e=>{
     return;
   }
 
-  // RESTRICTION: Block login if user is already logged in on another device
-  if (found.active_session_token) {
-    toast(`Account "${found.username}" is already logged in on another device. Please log out from that device first.`, true);
-    return;
-  }
-
-  // Generate unique token for current login session
+  // Generate unique token for current login session, overriding any prior active session
   const sessionToken = uid('SESS');
   found.active_session_token = sessionToken;
   currentDeviceToken = sessionToken;
@@ -1264,12 +1272,6 @@ async function handleGoogleSignIn(response) {
     users.push(found);
   }
 
-  // RESTRICTION: Check single active session restriction for Google logins
-  if (found.active_session_token) {
-    toast(`Account "${found.username}" is already active on another device. Please log out from that device first.`, true);
-    return;
-  }
-
   const sessionToken = uid('SESS');
   found.role = 'Administrator';
   found.active_session_token = sessionToken;
@@ -1287,7 +1289,7 @@ async function handleGoogleSignIn(response) {
 async function performLogout(forced = false) {
   if (currentUser) {
     const userInList = users.find(u => u.id === currentUser.id);
-    if (userInList) {
+    if (userInList && userInList.active_session_token === currentDeviceToken) {
       userInList.active_session_token = null;
       await persistUsers();
     }
@@ -1298,7 +1300,7 @@ async function performLogout(forced = false) {
   $('#login-overlay').style.display = 'flex';
 
   if (forced) {
-    toast('Your session was logged in on another device or invalidated.', true);
+    toast('Logged out: This account logged in on another device.', true);
   } else {
     toast('Logged out successfully.');
   }
@@ -1500,6 +1502,9 @@ function updateSummary(){
 $('#checkout-btn').addEventListener('click', async ()=>{
   if (!cart.length){ toast('Cart is empty.', true); return; }
 
+  // Sync latest inventory state before final deduction
+  if (firebaseDbUrl) await cloudSyncPull();
+
   const shortfalls = [];
   for (const c of cart){
     const live = products.find(p=>p.id === c.product_id);
@@ -1509,6 +1514,7 @@ $('#checkout-btn').addEventListener('click', async ()=>{
   }
   if (shortfalls.length){
     toast('Checkout stopped -- insufficient stock for: ' + shortfalls.join(', '), true);
+    renderProductGrid();
     return;
   }
 
