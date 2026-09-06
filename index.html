@@ -1,4 +1,4 @@
-<meta name='viewport' content='width=device-width, initial-scale=1'/><meta name='viewport' content='width=device-width, initial-scale=1'/><meta name='viewport' content='width=device-width, initial-scale=1'/><!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -53,7 +53,26 @@
   }
   .login-card{
     background:#fff; border:1px solid var(--border); border-radius:8px;
-    padding:28px; width:100%; max-width:360px; box-shadow:0 4px 20px rgba(0,0,0,0.08);
+    padding:28px; width:100%; max-width:380px; box-shadow:0 4px 20px rgba(0,0,0,0.08);
+  }
+
+  .login-divider {
+    display: flex;
+    align-items: center;
+    text-align: center;
+    margin: 16px 0;
+    color: var(--muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .login-divider::before, .login-divider::after {
+    content: '';
+    flex: 1;
+    border-bottom: 1px solid var(--border);
+  }
+  .login-divider span {
+    padding: 0 10px;
   }
 
   .app{
@@ -367,6 +386,20 @@
       </div>
       <button type="submit" class="btn btn-primary" style="width:100%; margin-top:8px;">Log In</button>
     </form>
+
+    <div class="login-divider"><span>OR</span></div>
+
+    <!-- DYNAMIC GOOGLE CLIENT ID INPUT AND SIGN-IN CONTAINER -->
+    <div style="display:flex; flex-direction:column; align-items:center; width:100%;">
+      <div class="field" style="width:100%; margin-bottom:10px;">
+        <label>Google Client ID</label>
+        <div style="display:flex; gap:6px;">
+          <input type="text" id="google-client-id-input" placeholder="Enter your Client ID here..." style="font-size:11px; font-family:var(--mono);">
+          <button type="button" class="btn btn-sm btn-primary" id="save-google-id-btn" style="flex:0 0 auto;">Save</button>
+        </div>
+      </div>
+      <div id="g_id_signin_container" style="display:flex; justify-content:center; width:100%;"></div>
+    </div>
   </div>
 </div>
 
@@ -649,7 +682,7 @@
           <div style="font-weight:700; margin-bottom:12px;" id="user-form-title">Add New User</div>
           <input type="hidden" id="user-edit-id">
           <div class="field">
-            <label>Username</label>
+            <label>Username / Email</label>
             <input type="text" id="u-username">
           </div>
           <div class="field">
@@ -767,7 +800,6 @@ let currentCatFilter = 'all';
 let activeRemoveProductId = null;
 
 /* ---------- Valid Licenses ---------- */
-// Customize or add list of allowed license keys/passwords here
 const VALID_LICENSES = ['NEAZT-POS-2601-CUS', 'NEAZT-POS-2602-CUS', 'NEAZT-POS-2603-CUS', 'NEAZT-2026-TEST'];
 
 /* ---------- helpers ---------- */
@@ -806,6 +838,64 @@ async function storageSet(key, value){
   } catch(e) { console.error('Storage error', e); }
 }
 
+/* ---------- DYNAMIC GOOGLE CLIENT ID & OAUTH LOADER ---------- */
+let activeGoogleClientId = '';
+
+async function setupGoogleSignIn() {
+  const savedId = await storageGet('google_client_id');
+  if (savedId) {
+    activeGoogleClientId = savedId;
+    $('#google-client-id-input').value = savedId;
+    loadAndRenderGoogleSignIn(savedId);
+  }
+}
+
+function loadAndRenderGoogleSignIn(clientId) {
+  if (!clientId) return;
+  const container = $('#g_id_signin_container');
+  container.innerHTML = ''; // Clear existing button container
+
+  // Function to initialize Google Sign-In SDK
+  const initGSI = () => {
+    if (window.google && window.google.accounts && window.google.accounts.id) {
+      window.google.accounts.id.initialize({
+        client_id: clientId,
+        callback: handleGoogleSignIn,
+        auto_select: false
+      });
+      window.google.accounts.id.renderButton(
+        container,
+        { theme: 'outline', size: 'large', width: 304, shape: 'rectangular' }
+      );
+    }
+  };
+
+  // Dynamically load Google GSI library if not already injected
+  if (!document.getElementById('google-gsi-script')) {
+    const script = document.createElement('script');
+    script.id = 'google-gsi-script';
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.async = true;
+    script.defer = true;
+    script.onload = initGSI;
+    document.head.appendChild(script);
+  } else {
+    initGSI();
+  }
+}
+
+$('#save-google-id-btn').addEventListener('click', async () => {
+  const newClientId = $('#google-client-id-input').value.trim();
+  if (!newClientId) {
+    toast('Please enter a valid Google Client ID.', true);
+    return;
+  }
+  activeGoogleClientId = newClientId;
+  await storageSet('google_client_id', newClientId);
+  loadAndRenderGoogleSignIn(newClientId);
+  toast('Google Client ID saved and applied!');
+});
+
 /* ---------- LICENSE ACTIVATION CHECK ---------- */
 async function checkDeviceLicense() {
   const isActivated = await storageGet('device_activated');
@@ -822,7 +912,6 @@ $('#license-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const inputKey = $('#license-key-input').value.trim().toUpperCase();
   
-  // Checks key match or simple format pattern (MINIPOS- or MINI-POS-)
   const isValid = VALID_LICENSES.includes(inputKey) || inputKey.startsWith('MINI-POS-') || inputKey.startsWith('MINIPOS-');
   
   if (isValid) {
@@ -838,7 +927,7 @@ $('#license-form').addEventListener('submit', async (e) => {
 /* ---------- seed data ---------- */
 function seedData(){
   categories = ['Beverages','Snacks','Bakery','Grocery','Household'];
-  products = []; // Initialized clean with no sample products
+  products = [];
   users = [
     { id: 'u-1', username: 'admin', password: '123', role: 'Administrator' },
     { id: 'u-2', username: 'sale', password: '123', role: 'Sale Person' }
@@ -890,6 +979,57 @@ $('#login-form').addEventListener('submit', e=>{
   $('#login-password').value = '';
   toast(`Logged in as ${currentUser.username} (${currentUser.role})`);
 });
+
+/* Helper to parse JWT Google Token payload */
+function parseJwt(token) {
+  try {
+    const base64Url = token.split('.')[1];
+    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+    const jsonPayload = decodeURIComponent(atob(base64).split('').map(function(c) {
+      return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+    }).join(''));
+    return JSON.parse(jsonPayload);
+  } catch (e) {
+    return null;
+  }
+}
+
+/* Callback function triggered on successful Google OAuth response */
+async function handleGoogleSignIn(response) {
+  if (!response.credential) {
+    toast('Google Sign-In failed.', true);
+    return;
+  }
+
+  const payload = parseJwt(response.credential);
+  if (!payload || !payload.email) {
+    toast('Unable to verify Google profile details.', true);
+    return;
+  }
+
+  const googleEmail = payload.email.toLowerCase();
+  const googleName = payload.name || googleEmail.split('@')[0];
+
+  let found = users.find(u => u.username.toLowerCase() === googleEmail || u.username.toLowerCase() === googleName.toLowerCase());
+
+  if (!found) {
+    found = {
+      id: uid('U'),
+      username: googleEmail,
+      password: '',
+      role: 'Sale Person',
+      google_auth: true
+    };
+    users.push(found);
+    await persistUsers();
+    renderUsers();
+  }
+
+  currentUser = found;
+  applyUserPermissions();
+  $('#login-overlay').style.display = 'none';
+  toast(`Logged in via Google as ${currentUser.username} (${currentUser.role})`);
+}
 
 $('#logout-btn').addEventListener('click', ()=>{
   currentUser = null;
@@ -1310,7 +1450,6 @@ function renderHistory(){
     return mQ && mD;
   });
 
-  // Calculate Aggregated Metrics for selected Range Report
   let totalRevenue = 0;
   let totalTax = 0;
   let totalDiscount = 0;
@@ -1336,7 +1475,6 @@ function renderHistory(){
     }
   });
 
-  // Calculate refunds in date range
   refunds.filter(r => dateInRange(r.created_at, from, to)).forEach(r => {
     totalRefunds += r.total_refund_amount;
   });
@@ -1767,18 +1905,14 @@ function renderDashboard(){
   const now = new Date();
   const todayStart = new Date(now.toISOString().slice(0,10)+'T00:00:00').getTime();
   
-  // 1. Get today's sales and today's refund records
   const todaysSales = sales.filter(s => s.created_at >= todayStart);
   const todaysRefundRecords = refunds.filter(r => r.created_at >= todayStart);
   
-  // 2. Calculate actual refunds issued today
   const refundsToday = todaysRefundRecords.reduce((a, r) => a + r.total_refund_amount, 0);
 
-  // 3. Calculate gross profit adjusted for returned items
   const grossProfitToday = todaysSales.reduce((acc, sale) => {
-    if (sale.status === 'refunded') return acc; // Skip fully refunded sales
+    if (sale.status === 'refunded') return acc;
     
-    // Sum gross profit only for items that were NOT refunded
     const activeItemsProfit = sale.items.reduce((itemAcc, item) => {
       const activeQty = item.quantity - (item.refunded_qty || 0);
       return itemAcc + ((item.unit_price - item.unit_cost) * activeQty);
@@ -1787,10 +1921,8 @@ function renderDashboard(){
     return acc + activeItemsProfit;
   }, 0);
 
-  // 4. Low stock count
   const lowStock = products.filter(p => p.stock_qty <= p.min_stock_qty);
 
-  // 5. Render KPIs (including partial refund counts/totals)
   const partialRefundsTodayCount = todaysSales.filter(s => s.status === 'partially_refunded').length;
 
   $('#dash-kpis').innerHTML = `
@@ -1871,8 +2003,7 @@ $('#save-user-btn').addEventListener('click', async ()=>{
   } else {
     if (!password){ toast('Password is required for new users.', true); return; }
     if (users.some(u => u.username.toLowerCase() === username.toLowerCase())){
-      toast('Username already exists.', true); return;
-    }
+      toast('Username already exists.', true); return; }
     users.push({ id: uid('U'), username, password, role });
     toast(`User ${username} created.`);
   }
@@ -1897,6 +2028,7 @@ async function deleteUser(id){
 async function init(){
   await checkDeviceLicense();
   await loadData();
+  await setupGoogleSignIn();
   tickClock();
   renderChips();
   renderProductGrid();
