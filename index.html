@@ -2073,12 +2073,24 @@ function renderUsers(){
       <td style="font-weight:600;">${escapeHtml(u.username)}</td>
       <td><span class="badge ${u.role==='Administrator'?'badge-good':'badge-muted'}">${u.role}</span></td>
       <td>
-        <button class="btn btn-sm" onclick="editUser('${u.id}')">Edit</button>
-        ${users.length > 1 ? `<button class="btn btn-sm btn-danger" onclick="deleteUser('${u.id}')">Delete</button>` : ''}
+        <button class="btn btn-sm" data-edit-user="${u.id}">Edit</button>
+        ${users.length > 1 ? `<button class="btn btn-sm btn-danger" data-del-user="${u.id}">Delete</button>` : ''}
       </td>
     </tr>
   `).join('');
 }
+
+$('#user-table-body').addEventListener('click', async e => {
+  const editBtn = e.target.closest('[data-edit-user]');
+  if (editBtn) {
+    editUser(editBtn.dataset.editUser);
+    return;
+  }
+  const delBtn = e.target.closest('[data-del-user]');
+  if (delBtn) {
+    await deleteUser(delBtn.dataset.delUser);
+  }
+});
 
 function editUser(id){
   const u = users.find(x => x.id === id);
