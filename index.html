@@ -566,6 +566,8 @@
               <th>Product ID</th>
               <th>Product Name</th>
               <th style="text-align:right;">Qty Removed</th>
+              <th style="text-align:right;">Purchased Price</th>
+              <th style="text-align:right;">Lost Amount</th>
               <th>Reason &amp; Notes</th>
             </tr>
           </thead>
@@ -1725,6 +1727,8 @@ $('#confirm-remove-stock-btn').addEventListener('click', async () => {
     id: uid('ADJ'), 
     product_id: p.id, 
     delta: -qty, 
+    unit_cost: p.purchase_cost || 0,
+    currency: p.currency || 'USD',
     reason: fullReason, 
     created_at: Date.now() 
   });
@@ -1760,7 +1764,7 @@ function renderRemovedProducts() {
   const tbody = $('#removed-products-table-body');
   
   if (!removedLogs.length) {
-    tbody.innerHTML = `<tr><td colspan="5" class="empty-state">No removed product stock recorded.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" class="empty-state">No removed product stock recorded.</td></tr>`;
     return;
   }
 
@@ -1769,12 +1773,17 @@ function renderRemovedProducts() {
     const productName = p ? p.name : 'Unknown Product';
     const dateStr = new Date(a.created_at).toLocaleString();
     const qtyRemoved = Math.abs(a.delta);
+    const cost = a.unit_cost !== undefined ? a.unit_cost : (p ? p.purchase_cost || 0 : 0);
+    const curr = a.currency || (p ? p.currency || 'USD' : 'USD');
+    const lostAmt = qtyRemoved * cost;
 
     return `<tr>
       <td style="font-family:var(--mono); font-size:12px; color:var(--muted);">${dateStr}</td>
       <td style="font-family:var(--mono); font-size:12px; color:var(--muted);">${a.product_id}</td>
       <td style="font-weight:600;">${escapeHtml(productName)}</td>
       <td class="num" style="color:var(--bad); font-weight:700;">-${qtyRemoved}</td>
+      <td class="num">${curr} ${money(cost)}</td>
+      <td class="num" style="color:var(--bad); font-weight:700;">${curr} ${money(lostAmt)}</td>
       <td><span class="badge badge-bad" style="margin-right:6px;">Removed</span>${escapeHtml(a.reason || 'Not specified')}</td>
     </tr>`;
   }).join('');
@@ -1872,9 +1881,13 @@ function renderHistory(){
     totalRefunds += r.total_refund_amount;
   });
 
-  const removedCountInRange = stockAdjustments
+  const totalRemovedAmountInRange = stockAdjustments
     .filter(a => a.delta < 0 && dateInRange(a.created_at, from, to))
-    .reduce((sum, a) => sum + Math.abs(a.delta), 0);
+    .reduce((sum, a) => {
+      const p = products.find(x => x.id === a.product_id);
+      const cost = a.unit_cost !== undefined ? a.unit_cost : (p ? p.purchase_cost || 0 : 0);
+      return sum + (Math.abs(a.delta) * cost);
+    }, 0);
 
   $('#hist-kpis').innerHTML = `
     <div class="kpi"><div class="kpi-label">Sales Count</div><div class="kpi-val">${completedCount}</div></div>
@@ -1883,7 +1896,7 @@ function renderHistory(){
     <div class="kpi"><div class="kpi-label">Discounts Given</div><div class="kpi-val">${money(totalDiscount)}</div></div>
     <div class="kpi good"><div class="kpi-label">Gross Profit</div><div class="kpi-val">${money(totalGrossProfit)}</div></div>
     <div class="kpi ${totalRefunds > 0 ? 'warn' : ''}"><div class="kpi-label">Total Refunded</div><div class="kpi-val">${money(totalRefunds)}</div></div>
-    <div class="kpi ${removedCountInRange > 0 ? 'warn' : ''}"><div class="kpi-label">Total Removed Items</div><div class="kpi-val">${removedCountInRange}</div></div>
+    <div class="kpi ${totalRemovedAmountInRange > 0 ? 'warn' : ''}"><div class="kpi-label">Total Amount of Removed Items</div><div class="kpi-val">${money(totalRemovedAmountInRange)}</div></div>
   `;
 
   if (!list.length){
@@ -1948,15 +1961,23 @@ $('#print-report-btn').addEventListener('click', () => {
   }).join('');
 
   const filteredRemovals = stockAdjustments.filter(a => a.delta < 0 && dateInRange(a.created_at, $('#hist-from').value, $('#hist-to').value));
-  const totalRemovedQty = filteredRemovals.reduce((sum, a) => sum + Math.abs(a.delta), 0);
+  const totalRemovedAmount = filteredRemovals.reduce((sum, a) => {
+    const p = products.find(x => x.id === a.product_id);
+    const cost = a.unit_cost !== undefined ? a.unit_cost : (p ? p.purchase_cost || 0 : 0);
+    return sum + (Math.abs(a.delta) * cost);
+  }, 0);
 
   const removalRows = filteredRemovals.map(a => {
     const p = products.find(x => x.id === a.product_id);
+    const cost = a.unit_cost !== undefined ? a.unit_cost : (p ? p.purchase_cost || 0 : 0);
+    const qty = Math.abs(a.delta);
     return `<tr>
       <td>${new Date(a.created_at).toLocaleString()}</td>
       <td>${a.product_id}</td>
       <td>${p ? escapeHtml(p.name) : 'Unknown'}</td>
-      <td style="text-align:right; color:#b23a34; font-weight:bold;">-${Math.abs(a.delta)}</td>
+      <td style="text-align:right; color:#b23a34; font-weight:bold;">-${qty}</td>
+      <td style="text-align:right;">${money(cost)}</td>
+      <td style="text-align:right; color:#b23a34; font-weight:bold;">${money(qty * cost)}</td>
       <td>${escapeHtml(a.reason || 'N/A')}</td>
     </tr>`;
   }).join('');
@@ -1993,7 +2014,7 @@ $('#print-report-btn').addEventListener('click', () => {
         <div class="kpi-card"><div class="lbl">Total Tax</div><div class="val">${money(totalTax)}</div></div>
         <div class="kpi-card"><div class="lbl">Total Discount</div><div class="val">${money(totalDiscount)}</div></div>
         <div class="kpi-card"><div class="lbl">Estimated Profit</div><div class="val">${money(totalProfit)}</div></div>
-        <div class="kpi-card"><div class="lbl">Removed Products Qty</div><div class="val">${totalRemovedQty}</div></div>
+        <div class="kpi-card"><div class="lbl">Total Amount of Removed Items</div><div class="val">${money(totalRemovedAmount)}</div></div>
       </div>
 
       <h3>Transaction Ledger</h3>
@@ -2023,11 +2044,13 @@ $('#print-report-btn').addEventListener('click', () => {
             <th>Product ID</th>
             <th>Product Name</th>
             <th style="text-align:right;">Qty Removed</th>
+            <th style="text-align:right;">Purchased Price</th>
+            <th style="text-align:right;">Lost Amount</th>
             <th>Reason</th>
           </tr>
         </thead>
         <tbody>
-          ${removalRows || '<tr><td colspan="5" style="text-align:center;">No stock removals recorded in this period.</td></tr>'}
+          ${removalRows || '<tr><td colspan="7" style="text-align:center;">No stock removals recorded in this period.</td></tr>'}
         </tbody>
       </table>
     </body>
@@ -2318,7 +2341,15 @@ $('#save-adjust-btn').addEventListener('click', async ()=>{
     }
     const delta = direction === 'add' ? qty : -qty;
     p.stock_qty += delta;
-    stockAdjustments.unshift({ id: uid('ADJ'), product_id: p.id, delta, reason, created_at: Date.now() });
+    stockAdjustments.unshift({ 
+      id: uid('ADJ'), 
+      product_id: p.id, 
+      delta, 
+      unit_cost: p.purchase_cost || 0,
+      currency: p.currency || 'USD',
+      reason, 
+      created_at: Date.now() 
+    });
     await persistAdjustments();
   }
 
@@ -2358,41 +2389,94 @@ function renderDashboard(){
 
   const totalRevenueToday = todaysSales.reduce((a, s) => s.status !== 'refunded' ? a + s.grand_total : a, 0);
 
+  const totalRemovedItemsToday = stockAdjustments
+    .filter(a => a.delta < 0 && a.created_at >= todayStart)
+    .reduce((sum, a) => sum + Math.abs(a.delta), 0);
+
   $('#dash-kpis').innerHTML = `
     <div class="kpi"><div class="kpi-label">Sales Today</div><div class="kpi-val">${todaysSales.length}</div></div>
     <div class="kpi good"><div class="kpi-label">Revenue Today</div><div class="kpi-val">${money(totalRevenueToday)}</div></div>
     <div class="kpi good"><div class="kpi-label">Gross Profit Today</div><div class="kpi-val">${money(grossProfitToday)}</div></div>
     <div class="kpi ${refundsToday > 0 ? 'warn' : ''}"><div class="kpi-label">Refunds Today</div><div class="kpi-val">${money(refundsToday)}</div></div>
-    <div class="kpi ${lowStock.length > 0 ? 'warn' : ''}"><div class="kpi-label">Low Stock Items</div><div class="kpi-val">${lowStock.length}</div></div>
+    <div class="kpi ${lowStock.length > 0 ? 'warn' : ''}"><div class="kpi-label">Low Stock Alerts</div><div class="kpi-val">${lowStock.length}</div></div>
+    <div class="kpi ${totalRemovedItemsToday > 0 ? 'warn' : ''}"><div class="kpi-label">Total Removed Items</div><div class="kpi-val">${totalRemovedItemsToday}</div></div>
   `;
 
-  const el = $('#dash-lowstock');
-  if (!lowStock.length){
-    el.innerHTML = `<div class="empty-state" style="padding:16px 0;">All stock levels are healthy.</div>`;
+  if (!lowStock.length) {
+    $('#dash-lowstock').innerHTML = `<div style="color:var(--muted); font-size:13px;">All products have sufficient stock levels.</div>`;
   } else {
-    el.innerHTML = `<table style="margin-top:8px;">
-      <thead><tr><th>Product</th><th style="text-align:right;">Current stock</th><th style="text-align:right;">Minimum</th></tr></thead>
-      <tbody>` + lowStock.map(p=>`<tr>
-        <td>${escapeHtml(p.name)}</td>
-        <td class="num" style="color:var(--bad); font-weight:700;">${p.stock_qty}</td>
-        <td class="num">${p.min_stock_qty}</td>
-      </tr>`).join('') + `</tbody></table>`;
+    $('#dash-lowstock').innerHTML = `<table>
+      <thead><tr><th>Product</th><th>ID</th><th style="text-align:right;">Stock</th><th style="text-align:right;">Min Required</th></tr></thead>
+      <tbody>
+        ${lowStock.map(p => `<tr class="row-low">
+          <td style="font-weight:600;">${escapeHtml(p.name)}</td>
+          <td style="font-family:var(--mono); font-size:12px; color:var(--muted);">${p.id}</td>
+          <td class="num" style="color:var(--bad); font-weight:700;">${p.stock_qty}</td>
+          <td class="num">${p.min_stock_qty}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`;
   }
 }
 
 /* ================= USER MANAGEMENT VIEW ================= */
 function renderUsers(){
   const tbody = $('#user-table-body');
+  if (!users.length) {
+    tbody.innerHTML = `<tr><td colspan="3" class="empty-state">No users registered.</td></tr>`;
+    return;
+  }
   tbody.innerHTML = users.map(u => `
     <tr>
-      <td>${escapeHtml(u.username)} ${u.google_auth ? '<span class="badge badge-good">Google</span>' : ''}</td>
-      <td>${u.role}</td>
-      <td>
+      <td style="font-weight:600;">${escapeHtml(u.username)} ${u.google_auth ? '<span class="badge badge-muted">Google</span>' : ''}</td>
+      <td><span class="badge ${u.role === 'Administrator' ? 'badge-good' : 'badge-muted'}">${u.role}</span></td>
+      <td style="text-align:right;">
         <button class="btn btn-sm" data-edit-user="${u.id}">Edit</button>
-        ${u.username !== 'admin' ? `<button class="btn btn-sm btn-danger" data-del-user="${u.id}">Delete</button>` : ''}
+        ${users.length > 1 ? `<button class="btn btn-sm btn-danger" data-del-user="${u.id}">Delete</button>` : ''}
       </td>
     </tr>
   `).join('');
+}
+
+$('#user-table-body').addEventListener('click', e => {
+  const editBtn = e.target.closest('[data-edit-user]');
+  if (editBtn) {
+    const u = users.find(x => x.id === editBtn.dataset-edit-user);
+    if (!u) return;
+    $('#user-edit-id').value = u.id;
+    $('#u-username').value = u.username;
+    $('#u-password').value = '';
+    $('#u-role').value = u.role;
+    $('#user-form-title').textContent = 'Edit User: ' + u.username;
+    $('#cancel-user-btn').style.display = 'inline-flex';
+    return;
+  }
+
+  const delBtn = e.target.closest('[data-del-user]');
+  if (delBtn) {
+    const uId = delBtn.dataset.del-user;
+    if (currentUser && currentUser.id === uId) {
+      toast('You cannot delete your own active account.', true);
+      return;
+    }
+    users = users.filter(x => x.id !== uId);
+    persistUsers();
+    renderUsers();
+    toast('User removed.');
+  }
+});
+
+$('#cancel-user-btn').addEventListener('click', () => {
+  resetUserForm();
+});
+
+function resetUserForm() {
+  $('#user-edit-id').value = '';
+  $('#u-username').value = '';
+  $('#u-password').value = '';
+  $('#u-role').value = 'Administrator';
+  $('#user-form-title').textContent = 'Add New User';
+  $('#cancel-user-btn').style.display = 'none';
 }
 
 $('#save-user-btn').addEventListener('click', async () => {
@@ -2401,23 +2485,29 @@ $('#save-user-btn').addEventListener('click', async () => {
   const password = $('#u-password').value.trim();
   const role = $('#u-role').value;
 
-  if (!username) { toast('Please enter a username.', true); return; }
+  if (!username) { toast('Please enter a username or email.', true); return; }
 
   if (editId) {
-    const user = users.find(u => u.id === editId);
-    if (user) {
-      user.username = username;
-      user.role = role;
-      if (password) user.password = password;
+    const u = users.find(x => x.id === editId);
+    if (u) {
+      u.username = username;
+      if (password) u.password = password;
+      u.role = role;
       toast(`User ${username} updated.`);
     }
   } else {
-    if (!password) { toast('Please enter a password for new users.', true); return; }
-    if (users.some(u => u.username.toLowerCase() === username.toLowerCase())) {
-      toast('Username already exists.', true); return;
-    }
-    users.push({ id: uid('U'), username, password, role, active_session_token: null });
-    toast(`User ${username} created.`);
+    if (!password) { toast('Please enter a password for new user.', true); return; }
+    const exists = users.some(x => x.username.toLowerCase() === username.toLowerCase());
+    if (exists) { toast('Username already exists.', true); return; }
+    
+    users.push({
+      id: uid('U'),
+      username,
+      password,
+      role,
+      active_session_token: null
+    });
+    toast(`User ${username} added.`);
   }
 
   await persistUsers();
@@ -2425,44 +2515,7 @@ $('#save-user-btn').addEventListener('click', async () => {
   renderUsers();
 });
 
-$('#user-table-body').addEventListener('click', async (e) => {
-  const editBtn = e.target.closest('[data-edit-user]');
-  if (editBtn) {
-    const user = users.find(u => u.id === editBtn.dataset.edit-user);
-    if (user) {
-      $('#user-edit-id').value = user.id;
-      $('#u-username').value = user.username;
-      $('#u-password').value = '';
-      $('#u-role').value = user.role;
-      $('#user-form-title').textContent = 'Edit User';
-      $('#cancel-user-btn').style.display = 'inline-flex';
-    }
-    return;
-  }
-
-  const delBtn = e.target.closest('[data-del-user]');
-  if (delBtn) {
-    const id = delBtn.dataset.del-user;
-    users = users.filter(u => u.id !== id);
-    await persistUsers();
-    renderUsers();
-    toast('User deleted.');
-  }
-});
-
-$('#cancel-user-btn').addEventListener('click', resetUserForm);
-
-function resetUserForm() {
-  $('#user-edit-id').value = '';
-  $('#u-username').value = '';
-  $('#u-password').value = '';
-  $('#u-role').value = 'Sale Person';
-  $('#user-form-title').textContent = 'Add New User';
-  $('#cancel-user-btn').style.display = 'none';
-}
-
-/* INITIALIZE SYSTEM */
-tickClock();
+/* Init */
 loadData();
 </script>
 </body>
