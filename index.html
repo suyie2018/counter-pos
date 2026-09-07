@@ -390,7 +390,7 @@
 </div>
 
 <!-- FIRST TIME LICENSE ACTIVATION OVERLAY -->
-<div class="license-overlay" id="license-overlay">
+<div class="license-overlay" id="license-overlay" style="display:none;">
   <div class="license-card">
     <div style="font-size:22px; font-weight:700; font-family:var(--mono); margin-bottom:4px; color:var(--text);">MINI_POS ACTIVATION</div>
     <div style="font-size:12px; color:var(--muted); margin-bottom:20px;">Please enter your License Key or Setup Password to register this device.</div>
@@ -2354,66 +2354,45 @@ $('#save-adjust-btn').addEventListener('click', async ()=>{
   }
 
   await persistProducts();
-  toast(`Product details for "${p.name}" updated successfully.`);
-  updateAdjustInfo(p.id);
-  $('#adj-direction').value = 'none';
+  toast(`Product "${p.name}" updated.`);
   $('#adj-qty').value = 0;
-  renderProductGrid();
+  $('#adj-direction').value = 'none';
+  renderSetup();
   renderProducts();
+  renderInventory();
   renderRemovedProducts();
-  renderDashboard();
 });
 
 /* ================= DASHBOARD VIEW ================= */
 function renderDashboard(){
-  const now = new Date();
-  const todayStart = new Date(now.toISOString().slice(0,10)+'T00:00:00').getTime();
+  const todayStr = new Date().toISOString().slice(0,10);
+  const todaySales = sales.filter(s=> new Date(s.created_at).toISOString().slice(0,10) === todayStr && s.status !== 'refunded');
   
-  const todaysSales = sales.filter(s => s.created_at >= todayStart);
-  const todaysRefundRecords = refunds.filter(r => r.created_at >= todayStart);
+  const revenue = todaySales.reduce((sum, s)=> sum + s.grand_total, 0);
+  const count = todaySales.length;
   
-  const refundsToday = todaysRefundRecords.reduce((a, r) => a + r.total_refund_amount, 0);
-
-  const grossProfitToday = todaysSales.reduce((acc, sale) => {
-    if (sale.status === 'refunded') return acc;
-    
-    const activeItemsProfit = sale.items.reduce((itemAcc, item) => {
-      const activeQty = item.quantity - (item.refunded_qty || 0);
-      return itemAcc + ((item.unit_price - item.unit_cost) * activeQty);
-    }, 0);
-
-    return acc + activeItemsProfit;
-  }, 0);
-
-  const lowStock = products.filter(p => p.stock_qty <= p.min_stock_qty);
-
-  const totalRevenueToday = todaysSales.reduce((a, s) => s.status !== 'refunded' ? a + s.grand_total : a, 0);
-
-  const totalRemovedItemsToday = stockAdjustments
-    .filter(a => a.delta < 0 && a.created_at >= todayStart)
-    .reduce((sum, a) => sum + Math.abs(a.delta), 0);
+  const lowStockProducts = products.filter(p=> p.stock_qty <= p.min_stock_qty);
 
   $('#dash-kpis').innerHTML = `
-    <div class="kpi"><div class="kpi-label">Sales Today</div><div class="kpi-val">${todaysSales.length}</div></div>
-    <div class="kpi good"><div class="kpi-label">Revenue Today</div><div class="kpi-val">${money(totalRevenueToday)}</div></div>
-    <div class="kpi good"><div class="kpi-label">Gross Profit Today</div><div class="kpi-val">${money(grossProfitToday)}</div></div>
-    <div class="kpi ${refundsToday > 0 ? 'warn' : ''}"><div class="kpi-label">Refunds Today</div><div class="kpi-val">${money(refundsToday)}</div></div>
-    <div class="kpi ${lowStock.length > 0 ? 'warn' : ''}"><div class="kpi-label">Low Stock Alerts</div><div class="kpi-val">${lowStock.length}</div></div>
-    <div class="kpi ${totalRemovedItemsToday > 0 ? 'warn' : ''}"><div class="kpi-label">Total Removed Items</div><div class="kpi-val">${totalRemovedItemsToday}</div></div>
+    <div class="kpi"><div class="kpi-label">Today's Transactions</div><div class="kpi-val">${count}</div></div>
+    <div class="kpi good"><div class="kpi-label">Today's Revenue</div><div class="kpi-val">${money(revenue)}</div></div>
+    <div class="kpi ${lowStockProducts.length > 0 ? 'warn' : ''}"><div class="kpi-label">Low Stock Items</div><div class="kpi-val">${lowStockProducts.length}</div></div>
   `;
 
-  if (!lowStock.length) {
-    $('#dash-lowstock').innerHTML = `<div style="color:var(--muted); font-size:13px;">All products have sufficient stock levels.</div>`;
+  if (!lowStockProducts.length){
+    $('#dash-lowstock').innerHTML = `<div class="empty-state" style="padding:10px 0;">All product stock levels are healthy.</div>`;
   } else {
     $('#dash-lowstock').innerHTML = `<table>
-      <thead><tr><th>Product</th><th>ID</th><th style="text-align:right;">Stock</th><th style="text-align:right;">Min Required</th></tr></thead>
+      <thead><tr><th>Product Name</th><th>ID</th><th style="text-align:right;">Current Stock</th><th style="text-align:right;">Minimum Required</th></tr></thead>
       <tbody>
-        ${lowStock.map(p => `<tr class="row-low">
-          <td style="font-weight:600;">${escapeHtml(p.name)}</td>
-          <td style="font-family:var(--mono); font-size:12px; color:var(--muted);">${p.id}</td>
-          <td class="num" style="color:var(--bad); font-weight:700;">${p.stock_qty}</td>
-          <td class="num">${p.min_stock_qty}</td>
-        </tr>`).join('')}
+        ${lowStockProducts.map(p=>`
+          <tr class="row-low">
+            <td style="font-weight:600;">${escapeHtml(p.name)}</td>
+            <td style="font-family:var(--mono); font-size:12px; color:var(--muted);">${p.id}</td>
+            <td class="num" style="color:var(--bad); font-weight:700;">${p.stock_qty}</td>
+            <td class="num">${p.min_stock_qty}</td>
+          </tr>
+        `).join('')}
       </tbody>
     </table>`;
   }
@@ -2422,15 +2401,11 @@ function renderDashboard(){
 /* ================= USER MANAGEMENT VIEW ================= */
 function renderUsers(){
   const tbody = $('#user-table-body');
-  if (!users.length) {
-    tbody.innerHTML = `<tr><td colspan="3" class="empty-state">No users registered.</td></tr>`;
-    return;
-  }
-  tbody.innerHTML = users.map(u => `
+  tbody.innerHTML = users.map(u=> `
     <tr>
       <td style="font-weight:600;">${escapeHtml(u.username)} ${u.google_auth ? '<span class="badge badge-muted">Google</span>' : ''}</td>
-      <td><span class="badge ${u.role === 'Administrator' ? 'badge-good' : 'badge-muted'}">${u.role}</span></td>
-      <td style="text-align:right;">
+      <td>${escapeHtml(u.role)}</td>
+      <td>
         <button class="btn btn-sm" data-edit-user="${u.id}">Edit</button>
         ${users.length > 1 ? `<button class="btn btn-sm btn-danger" data-del-user="${u.id}">Delete</button>` : ''}
       </td>
@@ -2438,68 +2413,32 @@ function renderUsers(){
   `).join('');
 }
 
-$('#user-table-body').addEventListener('click', e => {
-  const editBtn = e.target.closest('[data-edit-user]');
-  if (editBtn) {
-    const u = users.find(x => x.id === editBtn.dataset-edit-user);
-    if (!u) return;
-    $('#user-edit-id').value = u.id;
-    $('#u-username').value = u.username;
-    $('#u-password').value = '';
-    $('#u-role').value = u.role;
-    $('#user-form-title').textContent = 'Edit User: ' + u.username;
-    $('#cancel-user-btn').style.display = 'inline-flex';
-    return;
-  }
-
-  const delBtn = e.target.closest('[data-del-user]');
-  if (delBtn) {
-    const uId = delBtn.dataset.del-user;
-    if (currentUser && currentUser.id === uId) {
-      toast('You cannot delete your own active account.', true);
-      return;
-    }
-    users = users.filter(x => x.id !== uId);
-    persistUsers();
-    renderUsers();
-    toast('User removed.');
-  }
-});
-
-$('#cancel-user-btn').addEventListener('click', () => {
-  resetUserForm();
-});
-
-function resetUserForm() {
-  $('#user-edit-id').value = '';
-  $('#u-username').value = '';
-  $('#u-password').value = '';
-  $('#u-role').value = 'Administrator';
-  $('#user-form-title').textContent = 'Add New User';
-  $('#cancel-user-btn').style.display = 'none';
-}
-
-$('#save-user-btn').addEventListener('click', async () => {
+$('#save-user-btn').addEventListener('click', async ()=>{
   const editId = $('#user-edit-id').value;
   const username = $('#u-username').value.trim();
   const password = $('#u-password').value.trim();
   const role = $('#u-role').value;
 
-  if (!username) { toast('Please enter a username or email.', true); return; }
+  if (!username){ toast('Username is required.', true); return; }
 
-  if (editId) {
-    const u = users.find(x => x.id === editId);
-    if (u) {
-      u.username = username;
-      if (password) u.password = password;
-      u.role = role;
-      toast(`User ${username} updated.`);
-    }
-  } else {
-    if (!password) { toast('Please enter a password for new user.', true); return; }
-    const exists = users.some(x => x.username.toLowerCase() === username.toLowerCase());
-    if (exists) { toast('Username already exists.', true); return; }
+  if (editId){
+    const u = users.find(x=>x.id === editId);
+    if (!u) return;
     
+    const exists = users.some(x=> x.id !== editId && x.username.toLowerCase() === username.toLowerCase());
+    if (exists){ toast(`Username "${username}" is already taken.`, true); return; }
+
+    u.username = username;
+    if (password) u.password = password;
+    u.role = role;
+
+    toast(`User "${username}" updated.`);
+  } else {
+    if (!password){ toast('Password is required for new users.', true); return; }
+    
+    const exists = users.some(x=> x.username.toLowerCase() === username.toLowerCase());
+    if (exists){ toast(`Username "${username}" is already taken.`, true); return; }
+
     users.push({
       id: uid('U'),
       username,
@@ -2507,7 +2446,8 @@ $('#save-user-btn').addEventListener('click', async () => {
       role,
       active_session_token: null
     });
-    toast(`User ${username} added.`);
+
+    toast(`User "${username}" created.`);
   }
 
   await persistUsers();
@@ -2515,8 +2455,56 @@ $('#save-user-btn').addEventListener('click', async () => {
   renderUsers();
 });
 
-/* Init */
-loadData();
+function resetUserForm(){
+  $('#user-form-title').textContent = 'Add New User';
+  $('#user-edit-id').value = '';
+  $('#u-username').value = '';
+  $('#u-password').value = '';
+  $('#u-role').value = 'Administrator';
+  $('#cancel-user-btn').style.display = 'none';
+}
+
+$('#cancel-user-btn').addEventListener('click', resetUserForm);
+
+$('#user-table-body').addEventListener('click', async e=>{
+  const editBtn = e.target.closest('[data-edit-user]');
+  if (editBtn){
+    const id = editBtn.dataset.edit-user;
+    const u = users.find(x=>x.id === id);
+    if (!u) return;
+    
+    $('#user-form-title').textContent = 'Edit User';
+    $('#user-edit-id').value = u.id;
+    $('#u-username').value = u.username;
+    $('#u-password').value = '';
+    $('#u-role').value = u.role;
+    $('#cancel-user-btn').style.display = 'inline-flex';
+    return;
+  }
+
+  const delBtn = e.target.closest('[data-del-user]');
+  if (delBtn){
+    const id = delBtn.dataset.del-user;
+    const u = users.find(x=>x.id === id);
+    if (!u) return;
+
+    if (currentUser && currentUser.id === u.id){
+      toast('You cannot delete your own logged-in account.', true);
+      return;
+    }
+
+    users = users.filter(x=>x.id !== id);
+    await persistUsers();
+    toast(`User "${u.username}" deleted.`);
+    renderUsers();
+  }
+});
+
+/* ---------- INITIALIZATION ---------- */
+window.addEventListener('DOMContentLoaded', async ()=>{
+  tickClock();
+  await loadData();
+});
 </script>
 </body>
 </html>
