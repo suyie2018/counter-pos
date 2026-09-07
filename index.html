@@ -794,7 +794,7 @@
         <div class="panel" style="flex:1;">
           <table>
             <thead>
-              <tr><th>Username</th><th>Role</th><th>Actions</th></tr>
+              <tr><th>Username</th><th>Role</th><th>Status</th><th>Actions</th></tr>
             </thead>
             <tbody id="user-table-body"></tbody>
           </table>
@@ -1372,7 +1372,7 @@ async function performLogout(forced = false) {
   $('#login-overlay').style.display = 'flex';
 
   if (forced) {
-    toast('Logged out: This account logged in on another device.', true);
+    toast('Logged out: This account logged in on another device or was logged out by admin.', true);
   } else {
     toast('Logged out successfully.');
   }
@@ -2374,25 +2374,18 @@ function renderDashboard(){
   const lowStockProducts = products.filter(p=> p.stock_qty <= p.min_stock_qty);
 
   $('#dash-kpis').innerHTML = `
-    <div class="kpi"><div class="kpi-label">Today's Transactions</div><div class="kpi-val">${count}</div></div>
     <div class="kpi good"><div class="kpi-label">Today's Revenue</div><div class="kpi-val">${money(revenue)}</div></div>
-    <div class="kpi ${lowStockProducts.length > 0 ? 'warn' : ''}"><div class="kpi-label">Low Stock Items</div><div class="kpi-val">${lowStockProducts.length}</div></div>
+    <div class="kpi"><div class="kpi-label">Today's Sales Count</div><div class="kpi-val">${count}</div></div>
+    <div class="kpi ${lowStockProducts.length>0?'warn':''}"><div class="kpi-label">Low Stock Items</div><div class="kpi-val">${lowStockProducts.length}</div></div>
   `;
 
   if (!lowStockProducts.length){
-    $('#dash-lowstock').innerHTML = `<div class="empty-state" style="padding:10px 0;">All product stock levels are healthy.</div>`;
+    $('#dash-lowstock').innerHTML = `<div style="font-size:13px; color:var(--muted);">All stock levels are optimal.</div>`;
   } else {
     $('#dash-lowstock').innerHTML = `<table>
-      <thead><tr><th>Product Name</th><th>ID</th><th style="text-align:right;">Current Stock</th><th style="text-align:right;">Minimum Required</th></tr></thead>
+      <thead><tr><th>Product</th><th style="text-align:right;">Stock</th><th style="text-align:right;">Min</th></tr></thead>
       <tbody>
-        ${lowStockProducts.map(p=>`
-          <tr class="row-low">
-            <td style="font-weight:600;">${escapeHtml(p.name)}</td>
-            <td style="font-family:var(--mono); font-size:12px; color:var(--muted);">${p.id}</td>
-            <td class="num" style="color:var(--bad); font-weight:700;">${p.stock_qty}</td>
-            <td class="num">${p.min_stock_qty}</td>
-          </tr>
-        `).join('')}
+        ${lowStockProducts.map(p=>`<tr><td>${escapeHtml(p.name)}</td><td class="num">${p.stock_qty}</td><td class="num">${p.min_stock_qty}</td></tr>`).join('')}
       </tbody>
     </table>`;
   }
@@ -2400,17 +2393,87 @@ function renderDashboard(){
 
 /* ================= USER MANAGEMENT VIEW ================= */
 function renderUsers(){
+  if (!currentUser || currentUser.role !== 'Administrator') return;
   const tbody = $('#user-table-body');
-  tbody.innerHTML = users.map(u=> `
-    <tr>
-      <td style="font-weight:600;">${escapeHtml(u.username)} ${u.google_auth ? '<span class="badge badge-muted">Google</span>' : ''}</td>
+  
+  tbody.innerHTML = users.map(u=>{
+    const isLoggedIn = Boolean(u.active_session_token);
+    const statusBadge = isLoggedIn 
+      ? `<span class="badge badge-good">Online</span>` 
+      : `<span class="badge badge-muted">Offline</span>`;
+
+    const forceLogoutBtn = isLoggedIn 
+      ? `<button class="btn btn-sm btn-danger" data-force-logout="${u.id}" style="margin-left:4px;">Force Logout</button>` 
+      : ``;
+
+    return `<tr>
+      <td style="font-weight:600;">${escapeHtml(u.username)}</td>
       <td>${escapeHtml(u.role)}</td>
+      <td>${statusBadge}</td>
       <td>
         <button class="btn btn-sm" data-edit-user="${u.id}">Edit</button>
-        ${users.length > 1 ? `<button class="btn btn-sm btn-danger" data-del-user="${u.id}">Delete</button>` : ''}
+        ${forceLogoutBtn}
+        ${u.username.toLowerCase() !== 'admin' ? `<button class="btn btn-sm btn-danger" data-del-user="${u.id}" style="margin-left:4px;">Delete</button>` : ''}
       </td>
-    </tr>
-  `).join('');
+    </tr>`;
+  }).join('');
+}
+
+$('#user-table-body').addEventListener('click', async e=>{
+  const editBtn = e.target.closest('[data-edit-user]');
+  if (editBtn){
+    const u = users.find(x=>x.id === editBtn.dataset.edit-user);
+    if (u){
+      $('#user-form-title').textContent = 'Edit User: ' + u.username;
+      $('#user-edit-id').value = u.id;
+      $('#u-username').value = u.username;
+      $('#u-password').value = '';
+      $('#u-role').value = u.role;
+      $('#cancel-user-btn').style.display = 'inline-flex';
+    }
+    return;
+  }
+
+  const forceBtn = e.target.closest('[data-force-logout]');
+  if (forceBtn){
+    const uidTarget = forceBtn.dataset.force-logout;
+    const u = users.find(x => x.id === uidTarget);
+    if (u) {
+      u.active_session_token = null;
+      await persistUsers();
+      toast(`User ${u.username} has been forcibly logged out.`);
+      renderUsers();
+    }
+    return;
+  }
+
+  const delBtn = e.target.closest('[data-del-user]');
+  if (delBtn){
+    const u = users.find(x=>x.id === delBtn.dataset.del-user);
+    if (u){
+      if (u.id === currentUser.id){
+        toast('Cannot delete yourself.', true);
+        return;
+      }
+      users = users.filter(x=>x.id !== u.id);
+      await persistUsers();
+      toast(`User "${u.username}" deleted.`);
+      renderUsers();
+    }
+  }
+});
+
+$('#cancel-user-btn').addEventListener('click', ()=>{
+  resetUserForm();
+});
+
+function resetUserForm(){
+  $('#user-form-title').textContent = 'Add New User';
+  $('#user-edit-id').value = '';
+  $('#u-username').value = '';
+  $('#u-password').value = '';
+  $('#u-role').value = 'Sale Person';
+  $('#cancel-user-btn').style.display = 'none';
 }
 
 $('#save-user-btn').addEventListener('click', async ()=>{
@@ -2423,88 +2486,37 @@ $('#save-user-btn').addEventListener('click', async ()=>{
 
   if (editId){
     const u = users.find(x=>x.id === editId);
-    if (!u) return;
-    
-    const exists = users.some(x=> x.id !== editId && x.username.toLowerCase() === username.toLowerCase());
-    if (exists){ toast(`Username "${username}" is already taken.`, true); return; }
-
-    u.username = username;
-    if (password) u.password = password;
-    u.role = role;
-
-    toast(`User "${username}" updated.`);
+    if (u){
+      u.username = username;
+      if (password) u.password = password;
+      u.role = role;
+      await persistUsers();
+      toast(`User "${username}" updated.`);
+    }
   } else {
-    if (!password){ toast('Password is required for new users.', true); return; }
-    
-    const exists = users.some(x=> x.username.toLowerCase() === username.toLowerCase());
-    if (exists){ toast(`Username "${username}" is already taken.`, true); return; }
+    if (!password){ toast('Password is required for new user.', true); return; }
+    const exists = users.some(x=>x.username.toLowerCase() === username.toLowerCase());
+    if (exists){ toast('Username already exists.', true); return; }
 
-    users.push({
+    const newUser = {
       id: uid('U'),
       username,
       password,
       role,
       active_session_token: null
-    });
-
+    };
+    users.push(newUser);
+    await persistUsers();
     toast(`User "${username}" created.`);
   }
 
-  await persistUsers();
   resetUserForm();
   renderUsers();
 });
 
-function resetUserForm(){
-  $('#user-form-title').textContent = 'Add New User';
-  $('#user-edit-id').value = '';
-  $('#u-username').value = '';
-  $('#u-password').value = '';
-  $('#u-role').value = 'Administrator';
-  $('#cancel-user-btn').style.display = 'none';
-}
-
-$('#cancel-user-btn').addEventListener('click', resetUserForm);
-
-$('#user-table-body').addEventListener('click', async e=>{
-  const editBtn = e.target.closest('[data-edit-user]');
-  if (editBtn){
-    const id = editBtn.dataset.edit-user;
-    const u = users.find(x=>x.id === id);
-    if (!u) return;
-    
-    $('#user-form-title').textContent = 'Edit User';
-    $('#user-edit-id').value = u.id;
-    $('#u-username').value = u.username;
-    $('#u-password').value = '';
-    $('#u-role').value = u.role;
-    $('#cancel-user-btn').style.display = 'inline-flex';
-    return;
-  }
-
-  const delBtn = e.target.closest('[data-del-user]');
-  if (delBtn){
-    const id = delBtn.dataset.del-user;
-    const u = users.find(x=>x.id === id);
-    if (!u) return;
-
-    if (currentUser && currentUser.id === u.id){
-      toast('You cannot delete your own logged-in account.', true);
-      return;
-    }
-
-    users = users.filter(x=>x.id !== id);
-    await persistUsers();
-    toast(`User "${u.username}" deleted.`);
-    renderUsers();
-  }
-});
-
-/* ---------- INITIALIZATION ---------- */
-window.addEventListener('DOMContentLoaded', async ()=>{
-  tickClock();
-  await loadData();
-});
+/* Init */
+loadData();
+tickClock();
 </script>
 </body>
 </html>
