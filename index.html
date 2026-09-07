@@ -1,4 +1,5 @@
-<meta name='viewport' content='width=device-width, initial-scale=1'/><meta name='viewport' content='width=device-width, initial-scale=1'/><!DOCTYPE html>
+<meta name='viewport' content='width=device-width, initial-scale=1'/>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -940,7 +941,7 @@ window.addEventListener('storage', async (e) => {
 function renderAllViews() {
   const activeBtn = $('#nav button.active');
   const view = activeBtn ? activeBtn.dataset.view : 'pos';
-  if (view === 'pos') renderProductGrid();
+  if (view === 'pos') { renderChips(); renderProductGrid(); }
   if (view === 'products') renderProducts();
   if (view === 'inventory') renderInventory();
   if (view === 'removed-products') renderRemovedProducts();
@@ -1154,10 +1155,11 @@ async function checkDeviceLicense() {
   const isActivated = await storageGet('device_activated');
   if (isActivated) {
     $('#license-overlay').style.display = 'none';
-    $('#login-overlay').style.display = 'flex';
+    return true;
   } else {
     $('#license-overlay').style.display = 'flex';
     $('#login-overlay').style.display = 'none';
+    return false;
   }
 }
 
@@ -1201,8 +1203,6 @@ async function loadData(){
       $('#sync-status').textContent = dbEngineType.toUpperCase() + ' Connected';
       $('#sync-status').className = 'sync-badge sync-online';
       if (dbEngineType === 'firebase') startRealtimeSyncStream();
-      await checkSavedSession();
-      return;
     }
   }
 
@@ -1225,7 +1225,12 @@ async function loadData(){
   refunds = r || [];
   stockAdjustments = a || [];
 
-  await checkSavedSession();
+  const activated = await checkDeviceLicense();
+  if (activated) {
+    await checkSavedSession();
+  }
+  await setupGoogleSignIn();
+  renderAllViews();
 }
 
 async function checkSavedSession() {
@@ -1250,7 +1255,10 @@ async function checkSavedSession() {
       await storageSet('session_user', null);
       currentUser = null;
       currentDeviceToken = null;
+      $('#login-overlay').style.display = 'flex';
     }
+  } else {
+    $('#login-overlay').style.display = 'flex';
   }
 }
 
@@ -1411,7 +1419,7 @@ $('#nav').addEventListener('click', e=>{
   $$('.view').forEach(v=>v.classList.remove('active'));
   $('#view-' + view).classList.add('active');
 
-  if (view === 'pos') renderProductGrid();
+  if (view === 'pos') { renderChips(); renderProductGrid(); }
   if (view === 'products') renderProducts();
   if (view === 'inventory') renderInventory();
   if (view === 'removed-products') renderRemovedProducts();
@@ -1740,7 +1748,6 @@ $('#rm-search').addEventListener('input', renderRemovedProducts);
 function renderRemovedProducts() {
   const q = $('#rm-search').value.trim().toLowerCase();
   
-  // Filter for reductions (negative delta)
   const removedLogs = stockAdjustments.filter(a => a.delta < 0).filter(a => {
     const p = products.find(x => x.id === a.product_id);
     const pName = p ? p.name.toLowerCase() : '';
@@ -1865,7 +1872,6 @@ function renderHistory(){
     totalRefunds += r.total_refund_amount;
   });
 
-  // Calculate Total Removed Products within the active filter range
   const removedCountInRange = stockAdjustments
     .filter(a => a.delta < 0 && dateInRange(a.created_at, from, to))
     .reduce((sum, a) => sum + Math.abs(a.delta), 0);
@@ -1941,7 +1947,6 @@ $('#print-report-btn').addEventListener('click', () => {
     </tr>`;
   }).join('');
 
-  // Removed Products summary for report
   const filteredRemovals = stockAdjustments.filter(a => a.delta < 0 && dateInRange(a.created_at, $('#hist-from').value, $('#hist-to').value));
   const totalRemovedQty = filteredRemovals.reduce((sum, a) => sum + Math.abs(a.delta), 0);
 
@@ -2351,91 +2356,44 @@ function renderDashboard(){
 
   const lowStock = products.filter(p => p.stock_qty <= p.min_stock_qty);
 
-  const partialRefundsTodayCount = todaysSales.filter(s => s.status === 'partially_refunded').length;
-
-  // Total removed product stock today and total all-time
-  const todaysRemovedStock = stockAdjustments
-    .filter(a => a.delta < 0 && a.created_at >= todayStart)
-    .reduce((sum, a) => sum + Math.abs(a.delta), 0);
-
-  const totalRemovedStockAllTime = stockAdjustments
-    .filter(a => a.delta < 0)
-    .reduce((sum, a) => sum + Math.abs(a.delta), 0);
+  const totalRevenueToday = todaysSales.reduce((a, s) => s.status !== 'refunded' ? a + s.grand_total : a, 0);
 
   $('#dash-kpis').innerHTML = `
-    <div class="kpi good">
-      <div class="kpi-label">Today's gross profit</div>
-      <div class="kpi-val">${money(grossProfitToday)}</div>
-    </div>
-    <div class="kpi ${lowStock.length ? 'warn':''}">
-      <div class="kpi-label">Low stock warnings</div>
-      <div class="kpi-val">${lowStock.length}</div>
-    </div>
-    <div class="kpi">
-      <div class="kpi-label">Today's refunds (${partialRefundsTodayCount} partial)</div>
-      <div class="kpi-val">${money(refundsToday)}</div>
-    </div>
-    <div class="kpi ${todaysRemovedStock > 0 ? 'warn':''}">
-      <div class="kpi-label">Removed product stock (Today / All-Time)</div>
-      <div class="kpi-val">${todaysRemovedStock} <span style="font-size:13px; font-weight:normal; color:var(--muted);">/ ${totalRemovedStockAllTime} total</span></div>
-    </div>
+    <div class="kpi"><div class="kpi-label">Sales Today</div><div class="kpi-val">${todaysSales.length}</div></div>
+    <div class="kpi good"><div class="kpi-label">Revenue Today</div><div class="kpi-val">${money(totalRevenueToday)}</div></div>
+    <div class="kpi good"><div class="kpi-label">Gross Profit Today</div><div class="kpi-val">${money(grossProfitToday)}</div></div>
+    <div class="kpi ${refundsToday > 0 ? 'warn' : ''}"><div class="kpi-label">Refunds Today</div><div class="kpi-val">${money(refundsToday)}</div></div>
+    <div class="kpi ${lowStock.length > 0 ? 'warn' : ''}"><div class="kpi-label">Low Stock Items</div><div class="kpi-val">${lowStock.length}</div></div>
   `;
 
-  $('#dash-lowstock').innerHTML = lowStock.length ? lowStock.map(p => `
-    <div style="display:flex; justify-content:space-between; padding:9px 0; border-bottom:1px solid var(--border);">
-      <div>${escapeHtml(p.name)} <span style="color:var(--muted); font-size:11.5px;">(${p.id})</span></div>
-      <div class="num">${p.stock_qty} / min ${p.min_stock_qty}</div>
-    </div>`).join('') : `<div class="empty-state">Nothing is low on stock right now.</div>`;
+  const el = $('#dash-lowstock');
+  if (!lowStock.length){
+    el.innerHTML = `<div class="empty-state" style="padding:16px 0;">All stock levels are healthy.</div>`;
+  } else {
+    el.innerHTML = `<table style="margin-top:8px;">
+      <thead><tr><th>Product</th><th style="text-align:right;">Current stock</th><th style="text-align:right;">Minimum</th></tr></thead>
+      <tbody>` + lowStock.map(p=>`<tr>
+        <td>${escapeHtml(p.name)}</td>
+        <td class="num" style="color:var(--bad); font-weight:700;">${p.stock_qty}</td>
+        <td class="num">${p.min_stock_qty}</td>
+      </tr>`).join('') + `</tbody></table>`;
+  }
 }
 
-/* ================= USER MANAGEMENT VIEW (ADMIN ONLY) ================= */
+/* ================= USER MANAGEMENT VIEW ================= */
 function renderUsers(){
   const tbody = $('#user-table-body');
   tbody.innerHTML = users.map(u => `
     <tr>
-      <td style="font-weight:600;">${escapeHtml(u.username)}</td>
-      <td><span class="badge ${u.role==='Administrator'?'badge-good':'badge-muted'}">${u.role}</span></td>
+      <td>${escapeHtml(u.username)} ${u.google_auth ? '<span class="badge badge-good">Google</span>' : ''}</td>
+      <td>${u.role}</td>
       <td>
         <button class="btn btn-sm" data-edit-user="${u.id}">Edit</button>
-        ${users.length > 1 ? `<button class="btn btn-sm btn-danger" data-del-user="${u.id}">Delete</button>` : ''}
+        ${u.username !== 'admin' ? `<button class="btn btn-sm btn-danger" data-del-user="${u.id}">Delete</button>` : ''}
       </td>
     </tr>
   `).join('');
 }
-
-$('#user-table-body').addEventListener('click', async e => {
-  const editBtn = e.target.closest('[data-edit-user]');
-  if (editBtn) {
-    editUser(editBtn.dataset.editUser);
-    return;
-  }
-  const delBtn = e.target.closest('[data-del-user]');
-  if (delBtn) {
-    await deleteUser(delBtn.dataset.delUser);
-  }
-});
-
-function editUser(id){
-  const u = users.find(x => x.id === id);
-  if (!u) return;
-  $('#user-edit-id').value = u.id;
-  $('#u-username').value = u.username;
-  $('#u-password').value = '';
-  $('#u-role').value = u.role;
-  $('#user-form-title').textContent = 'Edit User';
-  $('#cancel-user-btn').style.display = 'inline-flex';
-}
-
-function resetUserForm(){
-  $('#user-edit-id').value = '';
-  $('#u-username').value = '';
-  $('#u-password').value = '';
-  $('#u-role').value = 'Administrator';
-  $('#user-form-title').textContent = 'Add New User';
-  $('#cancel-user-btn').style.display = 'none';
-}
-
-$('#cancel-user-btn').addEventListener('click', resetUserForm);
 
 $('#save-user-btn').addEventListener('click', async () => {
   const editId = $('#user-edit-id').value;
@@ -2445,29 +2403,21 @@ $('#save-user-btn').addEventListener('click', async () => {
 
   if (!username) { toast('Please enter a username.', true); return; }
 
-  if (firebaseDbUrl) await cloudSyncPull();
-
   if (editId) {
-    const existing = users.find(u => u.id === editId);
-    if (existing) {
-      existing.username = username;
-      if (password) existing.password = password;
-      existing.role = role;
-      toast(`User "${username}" updated.`);
+    const user = users.find(u => u.id === editId);
+    if (user) {
+      user.username = username;
+      user.role = role;
+      if (password) user.password = password;
+      toast(`User ${username} updated.`);
     }
   } else {
-    if (!password) { toast('Please enter a password for the new user.', true); return; }
-    const duplicate = users.some(u => u.username.toLowerCase() === username.toLowerCase());
-    if (duplicate) { toast('Username already exists.', true); return; }
-
-    users.push({
-      id: uid('U'),
-      username,
-      password,
-      role,
-      active_session_token: null
-    });
-    toast(`User "${username}" created.`);
+    if (!password) { toast('Please enter a password for new users.', true); return; }
+    if (users.some(u => u.username.toLowerCase() === username.toLowerCase())) {
+      toast('Username already exists.', true); return;
+    }
+    users.push({ id: uid('U'), username, password, role, active_session_token: null });
+    toast(`User ${username} created.`);
   }
 
   await persistUsers();
@@ -2475,27 +2425,45 @@ $('#save-user-btn').addEventListener('click', async () => {
   renderUsers();
 });
 
-async function deleteUser(id) {
-  if (currentUser && currentUser.id === id) {
-    toast('You cannot delete your own active user account.', true);
+$('#user-table-body').addEventListener('click', async (e) => {
+  const editBtn = e.target.closest('[data-edit-user]');
+  if (editBtn) {
+    const user = users.find(u => u.id === editBtn.dataset.edit-user);
+    if (user) {
+      $('#user-edit-id').value = user.id;
+      $('#u-username').value = user.username;
+      $('#u-password').value = '';
+      $('#u-role').value = user.role;
+      $('#user-form-title').textContent = 'Edit User';
+      $('#cancel-user-btn').style.display = 'inline-flex';
+    }
     return;
   }
-  users = users.filter(u => u.id !== id);
-  await persistUsers();
-  toast('User deleted.');
-  renderUsers();
+
+  const delBtn = e.target.closest('[data-del-user]');
+  if (delBtn) {
+    const id = delBtn.dataset.del-user;
+    users = users.filter(u => u.id !== id);
+    await persistUsers();
+    renderUsers();
+    toast('User deleted.');
+  }
+});
+
+$('#cancel-user-btn').addEventListener('click', resetUserForm);
+
+function resetUserForm() {
+  $('#user-edit-id').value = '';
+  $('#u-username').value = '';
+  $('#u-password').value = '';
+  $('#u-role').value = 'Sale Person';
+  $('#user-form-title').textContent = 'Add New User';
+  $('#cancel-user-btn').style.display = 'none';
 }
 
-/* ---------- INITIAL SETUP ON LOAD ---------- */
-window.addEventListener('DOMContentLoaded', async () => {
-  await loadData();
-  await checkDeviceLicense();
-  await setupGoogleSignIn();
-  tickClock();
-  renderChips();
-  renderProductGrid();
-  renderCategoryList();
-});
+/* INITIALIZE SYSTEM */
+tickClock();
+loadData();
 </script>
 </body>
 </html>
