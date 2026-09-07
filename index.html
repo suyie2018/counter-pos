@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<meta name='viewport' content='width=device-width, initial-scale=1'/><meta name='viewport' content='width=device-width, initial-scale=1'/><!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -454,6 +454,7 @@
       <button data-view="pos" class="active"><span class="nav-icon">▤</span>Cashier</button>
       <button data-view="products"><span class="nav-icon">▦</span>Products</button>
       <button data-view="inventory"><span class="nav-icon">◫</span>Inventory</button>
+      <button data-view="removed-products"><span class="nav-icon">🗑</span>Removed Products</button>
       <button data-view="history"><span class="nav-icon">≡</span>Sales History</button>
       <button data-view="setup"><span class="nav-icon">✎</span>Product Setup</button>
       <button data-view="dashboard" id="nav-dashboard"><span class="nav-icon">◆</span>Dashboard</button>
@@ -461,7 +462,7 @@
     </div>
     <div class="sidebar-footer">
       <button class="btn btn-sm btn-danger logout-btn-action" id="logout-btn" style="width:100%; margin-bottom:10px;">Log Out</button>
-      Data saved on device &amp; cloud
+      Data saved on device &amp; DB
     </div>
   </div>
 
@@ -545,6 +546,33 @@
       </div>
     </div>
 
+    <!-- REMOVED PRODUCTS VIEW -->
+    <div class="view" id="view-removed-products">
+      <div class="page-head">
+        <div>
+          <div class="page-title">Removed Products &amp; Stock Audit</div>
+          <div class="page-sub">Detailed logs of expired, damaged, disposed, or adjusted product stock.</div>
+        </div>
+      </div>
+      <div class="search-bar">
+        <input type="text" id="rm-search" placeholder="Search by name, ID or reason">
+      </div>
+      <div class="panel">
+        <table>
+          <thead>
+            <tr>
+              <th>Date &amp; Time</th>
+              <th>Product ID</th>
+              <th>Product Name</th>
+              <th style="text-align:right;">Qty Removed</th>
+              <th>Reason &amp; Notes</th>
+            </tr>
+          </thead>
+          <tbody id="removed-products-table-body"></tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- HISTORY VIEW & REPORTS -->
     <div class="view" id="view-history">
       <div class="page-head">
@@ -582,7 +610,7 @@
         <button class="tab active" data-tab="add">Add New Product</button>
         <button class="tab" data-tab="adjust">Edit Existing Product / Stock</button>
         <button class="tab" data-tab="categories">Categories</button>
-        <button class="tab" data-tab="sync">Cloud Sync Config</button>
+        <button class="tab" data-tab="sync">Database Sync Config</button>
       </div>
 
       <div id="tab-add" class="panel pad" style="max-width:520px;">
@@ -691,17 +719,25 @@
         <div id="cat-list" style="margin-top:6px;"></div>
       </div>
 
-      <!-- CLOUD SYNC CONFIG TAB -->
+      <!-- DATABASE SYNC CONFIG TAB (ORACLE / LOCAL DB) -->
       <div id="tab-sync" class="panel pad" style="max-width:520px; display:none;">
-        <div style="font-weight:700; margin-bottom:6px;">Real-time Multi-User Cloud Sync</div>
+        <div style="font-weight:700; margin-bottom:6px;">Database Connection Setup</div>
         <div style="font-size:12px; color:var(--muted); margin-bottom:14px;">
-          To sync stock and sales across all users/devices on GitHub Pages, enter a free Firebase Realtime Database URL.
+          Connect to a local database server or Oracle Database via REST API/Node Service Endpoint.
         </div>
         <div class="field">
-          <label>Firebase Database URL</label>
-          <input type="text" id="firebase-db-url" placeholder="https://your-project-default-rtdb.firebaseio.com">
+          <label>Database Type</label>
+          <select id="db-type-select">
+            <option value="firebase">Firebase Realtime DB (Default)</option>
+            <option value="oracle">Oracle Database REST API (ORDS / Express Service)</option>
+            <option value="local">Local Database Service (SQLite/MySQL REST Service)</option>
+          </select>
         </div>
-        <button class="btn btn-primary" id="save-sync-btn">Save &amp; Connect Cloud</button>
+        <div class="field">
+          <label>Database Endpoint / API Base URL</label>
+          <input type="text" id="firebase-db-url" placeholder="https://api.yourdomain.com/pos/v1 or https://rtdb.firebaseio.com">
+        </div>
+        <button class="btn btn-primary" id="save-sync-btn">Save &amp; Connect Database</button>
       </div>
     </div>
 
@@ -851,6 +887,7 @@ let cart = [];
 let currentCatFilter = 'all';
 let activeRemoveProductId = null;
 let firebaseDbUrl = '';
+let dbEngineType = 'firebase';
 let syncEventSource = null;
 
 /* ---------- Valid Licenses ---------- */
@@ -900,23 +937,45 @@ window.addEventListener('storage', async (e) => {
   }
 });
 
-/* ---------- CLOUD SYNC ENGINE (REALTIME LISTENERS & HTTP FALLBACKS) ---------- */
+function renderAllViews() {
+  const activeBtn = $('#nav button.active');
+  const view = activeBtn ? activeBtn.dataset.view : 'pos';
+  if (view === 'pos') renderProductGrid();
+  if (view === 'products') renderProducts();
+  if (view === 'inventory') renderInventory();
+  if (view === 'removed-products') renderRemovedProducts();
+  if (view === 'history') renderHistory();
+  if (view === 'setup') renderSetup();
+  if (view === 'dashboard') renderDashboard();
+  if (view === 'users') renderUsers();
+}
+
+/* ---------- DYNAMIC DATABASE ENGINE (FIREBASE / ORACLE REST API / LOCAL DB) ---------- */
 async function cloudSyncPush(key, value) {
   if (!firebaseDbUrl) return;
   try {
-    const cleanUrl = firebaseDbUrl.replace(/\/$/, '') + '/' + key + '.json';
+    let cleanUrl = firebaseDbUrl.replace(/\/$/, '');
+    if (dbEngineType === 'firebase') {
+      cleanUrl += '/' + key + '.json';
+    } else {
+      cleanUrl += '/api/' + key;
+    }
+    
     await fetch(cleanUrl, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(value)
     });
-  } catch(e) { console.error('Cloud Push Error', e); }
+  } catch(e) { console.error('DB Push Error', e); }
 }
 
 async function cloudSyncPull() {
   if (!firebaseDbUrl) return false;
   try {
-    const cleanUrl = firebaseDbUrl.replace(/\/$/, '') + '/.json';
+    let cleanUrl = firebaseDbUrl.replace(/\/$/, '');
+    if (dbEngineType === 'firebase') cleanUrl += '/.json';
+    else cleanUrl += '/api/sync_all';
+
     const res = await fetch(cleanUrl);
     if (!res.ok) return false;
     const data = await res.json();
@@ -929,13 +988,13 @@ async function cloudSyncPull() {
       if (data.users) { users = data.users; await storageSet('users', users); }
       return true;
     }
-  } catch(e) { console.error('Cloud Pull Error', e); }
+  } catch(e) { console.error('DB Pull Error', e); }
   return false;
 }
 
-/* REALTIME STREAMING SERVER-SENT EVENTS (SSE) FOR MULTI-DEVICE INSTANT SYNC */
+/* REALTIME STREAMING FOR INSTANT SYNC */
 function startRealtimeSyncStream() {
-  if (!firebaseDbUrl) return;
+  if (!firebaseDbUrl || dbEngineType !== 'firebase') return;
   if (syncEventSource) syncEventSource.close();
 
   try {
@@ -957,7 +1016,6 @@ function startRealtimeSyncStream() {
           users = data.users; 
           await storageSet('users', users);
           
-          /* Single Session Check: Logout if active_session_token changed elsewhere */
           if (currentUser) {
             const myUserInCloud = users.find(u => u.username.toLowerCase() === currentUser.username.toLowerCase());
             if (myUserInCloud && myUserInCloud.active_session_token && myUserInCloud.active_session_token !== currentDeviceToken) {
@@ -1001,7 +1059,6 @@ setInterval(async () => {
         renderAllViews();
       }
     } else {
-      // Local session verification
       const uLoc = users.find(u => u.username.toLowerCase() === currentUser.username.toLowerCase());
       if (uLoc && uLoc.active_session_token && uLoc.active_session_token !== currentDeviceToken) {
         await performLogout(true);
@@ -1012,24 +1069,27 @@ setInterval(async () => {
 
 $('#save-sync-btn').addEventListener('click', async () => {
   const url = $('#firebase-db-url').value.trim();
+  dbEngineType = $('#db-type-select').value;
   firebaseDbUrl = url;
   await storageSet('firebase_db_url', url);
+  await storageSet('db_engine_type', dbEngineType);
+  
   if (url) {
     const success = await cloudSyncPull();
     if (success) {
-      $('#sync-status').textContent = 'Cloud Connected';
+      $('#sync-status').textContent = dbEngineType.toUpperCase() + ' Connected';
       $('#sync-status').className = 'sync-badge sync-online';
-      startRealtimeSyncStream();
-      toast('Connected to Cloud Database! Data updated.');
+      if (dbEngineType === 'firebase') startRealtimeSyncStream();
+      toast(`Connected to ${dbEngineType.toUpperCase()} Database! Data updated.`);
       renderAllViews();
     } else {
-      toast('Failed to connect to Firebase URL.', true);
+      toast('Failed to connect to Database URL.', true);
     }
   } else {
     if (syncEventSource) syncEventSource.close();
     $('#sync-status').textContent = 'Local Mode';
     $('#sync-status').className = 'sync-badge sync-offline';
-    toast('Cloud Sync Disabled.');
+    toast('Database Sync Disabled.');
   }
 });
 
@@ -1129,14 +1189,18 @@ function seedData(){
 
 async function loadData(){
   const savedUrl = await storageGet('firebase_db_url');
+  const savedType = await storageGet('db_engine_type');
+  if (savedType) dbEngineType = savedType;
+  
   if (savedUrl) {
     firebaseDbUrl = savedUrl;
     $('#firebase-db-url').value = savedUrl;
+    $('#db-type-select').value = dbEngineType;
     const connected = await cloudSyncPull();
     if (connected) {
-      $('#sync-status').textContent = 'Cloud Connected';
+      $('#sync-status').textContent = dbEngineType.toUpperCase() + ' Connected';
       $('#sync-status').className = 'sync-badge sync-online';
-      startRealtimeSyncStream();
+      if (dbEngineType === 'firebase') startRealtimeSyncStream();
       await checkSavedSession();
       return;
     }
@@ -1170,7 +1234,6 @@ async function checkSavedSession() {
     if (firebaseDbUrl) await cloudSyncPull();
     const existing = users.find(u => u.username.toLowerCase() === savedSession.username.toLowerCase());
     
-    // Validate current device token against remote active token
     if (existing && existing.active_session_token === savedSession.token) {
       currentUser = existing;
       currentDeviceToken = savedSession.token;
@@ -1211,7 +1274,6 @@ $('#login-form').addEventListener('submit', async e=>{
     return;
   }
 
-  // Generate unique token for current login session, overriding any prior active session
   const sessionToken = uid('SESS');
   found.active_session_token = sessionToken;
   currentDeviceToken = sessionToken;
@@ -1306,7 +1368,6 @@ async function performLogout(forced = false) {
   }
 }
 
-// Attach logout handler to both sidebar & mobile top bar buttons
 $$('.logout-btn-action').forEach(btn => {
   btn.addEventListener('click', async () => {
     await performLogout(false);
@@ -1318,7 +1379,6 @@ function applyUserPermissions(){
   $('#current-user-name').textContent = currentUser.username;
   $('#current-user-role').textContent = currentUser.role;
 
-  // Sync details to mobile top header
   $('#m-user-name').textContent = currentUser.username;
   $('#m-user-role').textContent = currentUser.role;
 
@@ -1354,6 +1414,7 @@ $('#nav').addEventListener('click', e=>{
   if (view === 'pos') renderProductGrid();
   if (view === 'products') renderProducts();
   if (view === 'inventory') renderInventory();
+  if (view === 'removed-products') renderRemovedProducts();
   if (view === 'history') renderHistory();
   if (view === 'setup') renderSetup();
   if (view === 'dashboard') renderDashboard();
@@ -1502,7 +1563,6 @@ function updateSummary(){
 $('#checkout-btn').addEventListener('click', async ()=>{
   if (!cart.length){ toast('Cart is empty.', true); return; }
 
-  // Sync latest inventory state before final deduction
   if (firebaseDbUrl) await cloudSyncPull();
 
   const shortfalls = [];
@@ -1670,7 +1730,48 @@ $('#confirm-remove-stock-btn').addEventListener('click', async () => {
   renderProducts();
   renderProductGrid();
   renderInventory();
+  renderRemovedProducts();
+  renderDashboard();
 });
+
+/* ================= REMOVED PRODUCTS VIEW ================= */
+$('#rm-search').addEventListener('input', renderRemovedProducts);
+
+function renderRemovedProducts() {
+  const q = $('#rm-search').value.trim().toLowerCase();
+  
+  // Filter for reductions (negative delta)
+  const removedLogs = stockAdjustments.filter(a => a.delta < 0).filter(a => {
+    const p = products.find(x => x.id === a.product_id);
+    const pName = p ? p.name.toLowerCase() : '';
+    const pId = a.product_id.toLowerCase();
+    const reason = (a.reason || '').toLowerCase();
+    
+    return !q || pName.includes(q) || pId.includes(q) || reason.includes(q);
+  });
+
+  const tbody = $('#removed-products-table-body');
+  
+  if (!removedLogs.length) {
+    tbody.innerHTML = `<tr><td colspan="5" class="empty-state">No removed product stock recorded.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = removedLogs.map(a => {
+    const p = products.find(x => x.id === a.product_id);
+    const productName = p ? p.name : 'Unknown Product';
+    const dateStr = new Date(a.created_at).toLocaleString();
+    const qtyRemoved = Math.abs(a.delta);
+
+    return `<tr>
+      <td style="font-family:var(--mono); font-size:12px; color:var(--muted);">${dateStr}</td>
+      <td style="font-family:var(--mono); font-size:12px; color:var(--muted);">${a.product_id}</td>
+      <td style="font-weight:600;">${escapeHtml(productName)}</td>
+      <td class="num" style="color:var(--bad); font-weight:700;">-${qtyRemoved}</td>
+      <td><span class="badge badge-bad" style="margin-right:6px;">Removed</span>${escapeHtml(a.reason || 'Not specified')}</td>
+    </tr>`;
+  }).join('');
+}
 
 /* ================= INVENTORY VIEW ================= */
 function renderInventory(){
@@ -1764,6 +1865,11 @@ function renderHistory(){
     totalRefunds += r.total_refund_amount;
   });
 
+  // Calculate Total Removed Products within the active filter range
+  const removedCountInRange = stockAdjustments
+    .filter(a => a.delta < 0 && dateInRange(a.created_at, from, to))
+    .reduce((sum, a) => sum + Math.abs(a.delta), 0);
+
   $('#hist-kpis').innerHTML = `
     <div class="kpi"><div class="kpi-label">Sales Count</div><div class="kpi-val">${completedCount}</div></div>
     <div class="kpi good"><div class="kpi-label">Total Revenue</div><div class="kpi-val">${money(totalRevenue)}</div></div>
@@ -1771,6 +1877,7 @@ function renderHistory(){
     <div class="kpi"><div class="kpi-label">Discounts Given</div><div class="kpi-val">${money(totalDiscount)}</div></div>
     <div class="kpi good"><div class="kpi-label">Gross Profit</div><div class="kpi-val">${money(totalGrossProfit)}</div></div>
     <div class="kpi ${totalRefunds > 0 ? 'warn' : ''}"><div class="kpi-label">Total Refunded</div><div class="kpi-val">${money(totalRefunds)}</div></div>
+    <div class="kpi ${removedCountInRange > 0 ? 'warn' : ''}"><div class="kpi-label">Total Removed Items</div><div class="kpi-val">${removedCountInRange}</div></div>
   `;
 
   if (!list.length){
@@ -1834,6 +1941,21 @@ $('#print-report-btn').addEventListener('click', () => {
     </tr>`;
   }).join('');
 
+  // Removed Products summary for report
+  const filteredRemovals = stockAdjustments.filter(a => a.delta < 0 && dateInRange(a.created_at, $('#hist-from').value, $('#hist-to').value));
+  const totalRemovedQty = filteredRemovals.reduce((sum, a) => sum + Math.abs(a.delta), 0);
+
+  const removalRows = filteredRemovals.map(a => {
+    const p = products.find(x => x.id === a.product_id);
+    return `<tr>
+      <td>${new Date(a.created_at).toLocaleString()}</td>
+      <td>${a.product_id}</td>
+      <td>${p ? escapeHtml(p.name) : 'Unknown'}</td>
+      <td style="text-align:right; color:#b23a34; font-weight:bold;">-${Math.abs(a.delta)}</td>
+      <td>${escapeHtml(a.reason || 'N/A')}</td>
+    </tr>`;
+  }).join('');
+
   const reportWin = window.open('', '_blank', 'width=800,height=700');
   reportWin.document.write(`
     <html>
@@ -1841,13 +1963,13 @@ $('#print-report-btn').addEventListener('click', () => {
       <title>Sales Summary Report</title>
       <style>
         body { font-family: monospace, sans-serif; padding: 20px; color: #222; }
-        h2 { margin-bottom: 4px; }
+        h2, h3 { margin-bottom: 4px; }
         .meta { font-size: 12px; color: #555; margin-bottom: 20px; }
         .kpi-container { display: flex; gap: 15px; margin-bottom: 20px; flex-wrap: wrap; }
         .kpi-card { border: 1px solid #ccc; padding: 10px 14px; border-radius: 4px; flex: 1; min-width: 120px; }
         .kpi-card .lbl { font-size: 11px; color: #666; }
         .kpi-card .val { font-size: 16px; font-weight: bold; margin-top: 4px; }
-        table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }
+        table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; margin-bottom: 25px; }
         th, td { border-bottom: 1px solid #ddd; padding: 8px 6px; text-align: left; }
         th { background: #f5f5f5; }
       </style>
@@ -1866,6 +1988,7 @@ $('#print-report-btn').addEventListener('click', () => {
         <div class="kpi-card"><div class="lbl">Total Tax</div><div class="val">${money(totalTax)}</div></div>
         <div class="kpi-card"><div class="lbl">Total Discount</div><div class="val">${money(totalDiscount)}</div></div>
         <div class="kpi-card"><div class="lbl">Estimated Profit</div><div class="val">${money(totalProfit)}</div></div>
+        <div class="kpi-card"><div class="lbl">Removed Products Qty</div><div class="val">${totalRemovedQty}</div></div>
       </div>
 
       <h3>Transaction Ledger</h3>
@@ -1884,6 +2007,22 @@ $('#print-report-btn').addEventListener('click', () => {
         </thead>
         <tbody>
           ${saleRows || '<tr><td colspan="8" style="text-align:center;">No transactions recorded in this period.</td></tr>'}
+        </tbody>
+      </table>
+
+      <h3>Removed / Damaged Product Log Summary</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Date & Time</th>
+            <th>Product ID</th>
+            <th>Product Name</th>
+            <th style="text-align:right;">Qty Removed</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${removalRows || '<tr><td colspan="5" style="text-align:center;">No stock removals recorded in this period.</td></tr>'}
         </tbody>
       </table>
     </body>
@@ -2185,6 +2324,8 @@ $('#save-adjust-btn').addEventListener('click', async ()=>{
   $('#adj-qty').value = 0;
   renderProductGrid();
   renderProducts();
+  renderRemovedProducts();
+  renderDashboard();
 });
 
 /* ================= DASHBOARD VIEW ================= */
@@ -2212,6 +2353,15 @@ function renderDashboard(){
 
   const partialRefundsTodayCount = todaysSales.filter(s => s.status === 'partially_refunded').length;
 
+  // Total removed product stock today and total all-time
+  const todaysRemovedStock = stockAdjustments
+    .filter(a => a.delta < 0 && a.created_at >= todayStart)
+    .reduce((sum, a) => sum + Math.abs(a.delta), 0);
+
+  const totalRemovedStockAllTime = stockAdjustments
+    .filter(a => a.delta < 0)
+    .reduce((sum, a) => sum + Math.abs(a.delta), 0);
+
   $('#dash-kpis').innerHTML = `
     <div class="kpi good">
       <div class="kpi-label">Today's gross profit</div>
@@ -2224,6 +2374,10 @@ function renderDashboard(){
     <div class="kpi">
       <div class="kpi-label">Today's refunds (${partialRefundsTodayCount} partial)</div>
       <div class="kpi-val">${money(refundsToday)}</div>
+    </div>
+    <div class="kpi ${todaysRemovedStock > 0 ? 'warn':''}">
+      <div class="kpi-label">Removed product stock (Today / All-Time)</div>
+      <div class="kpi-val">${todaysRemovedStock} <span style="font-size:13px; font-weight:normal; color:var(--muted);">/ ${totalRemovedStockAllTime} total</span></div>
     </div>
   `;
 
@@ -2268,7 +2422,7 @@ function editUser(id){
   $('#u-username').value = u.username;
   $('#u-password').value = '';
   $('#u-role').value = u.role;
-  $('#user-form-title').textContent = 'Edit User: ' + u.username;
+  $('#user-form-title').textContent = 'Edit User';
   $('#cancel-user-btn').style.display = 'inline-flex';
 }
 
@@ -2283,28 +2437,37 @@ function resetUserForm(){
 
 $('#cancel-user-btn').addEventListener('click', resetUserForm);
 
-$('#save-user-btn').addEventListener('click', async ()=>{
+$('#save-user-btn').addEventListener('click', async () => {
   const editId = $('#user-edit-id').value;
   const username = $('#u-username').value.trim();
   const password = $('#u-password').value.trim();
   const role = $('#u-role').value;
 
-  if (!username){ toast('Username is required.', true); return; }
+  if (!username) { toast('Please enter a username.', true); return; }
 
-  if (editId){
-    const u = users.find(x => x.id === editId);
-    if (u){
-      u.username = username;
-      if (password) u.password = password;
-      u.role = role;
-      toast(`User ${username} updated.`);
+  if (firebaseDbUrl) await cloudSyncPull();
+
+  if (editId) {
+    const existing = users.find(u => u.id === editId);
+    if (existing) {
+      existing.username = username;
+      if (password) existing.password = password;
+      existing.role = role;
+      toast(`User "${username}" updated.`);
     }
   } else {
-    if (!password){ toast('Password is required for new users.', true); return; }
-    if (users.some(u => u.username.toLowerCase() === username.toLowerCase())){
-      toast('Username already exists.', true); return; }
-    users.push({ id: uid('U'), username, password, role, active_session_token: null });
-    toast(`User ${username} created.`);
+    if (!password) { toast('Please enter a password for the new user.', true); return; }
+    const duplicate = users.some(u => u.username.toLowerCase() === username.toLowerCase());
+    if (duplicate) { toast('Username already exists.', true); return; }
+
+    users.push({
+      id: uid('U'),
+      username,
+      password,
+      role,
+      active_session_token: null
+    });
+    toast(`User "${username}" created.`);
   }
 
   await persistUsers();
@@ -2312,38 +2475,27 @@ $('#save-user-btn').addEventListener('click', async ()=>{
   renderUsers();
 });
 
-async function deleteUser(id){
-  if (currentUser && currentUser.id === id){
-    toast('Cannot delete your own account.', true);
+async function deleteUser(id) {
+  if (currentUser && currentUser.id === id) {
+    toast('You cannot delete your own active user account.', true);
     return;
   }
   users = users.filter(u => u.id !== id);
   await persistUsers();
-  renderUsers();
   toast('User deleted.');
-}
-
-function renderAllViews(){
-  renderChips();
-  renderProductGrid();
-  renderCart();
-  renderProducts();
-  renderInventory();
-  renderHistory();
-  renderSetup();
-  renderDashboard();
   renderUsers();
 }
 
-/* ================= INIT ================= */
-async function init(){
-  await checkDeviceLicense();
+/* ---------- INITIAL SETUP ON LOAD ---------- */
+window.addEventListener('DOMContentLoaded', async () => {
   await loadData();
+  await checkDeviceLicense();
   await setupGoogleSignIn();
   tickClock();
-  renderAllViews();
-}
-init();
+  renderChips();
+  renderProductGrid();
+  renderCategoryList();
+});
 </script>
 </body>
 </html>
